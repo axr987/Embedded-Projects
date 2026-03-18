@@ -23,7 +23,7 @@ fullbody_cascade_name = args.fullbody_cascade
 fullbody_cascade = cv.CascadeClassifier()
 
 #-- load cascade
-if not fullbody_cascade.load(data.findFile(fullbody_cascade_name)):
+if not fullbody_cascade.load(Embedded-Projects.data.findFile(fullbody_cascade_name)):
 	print('--(!)Error loading full body cascade')
 	exit(0)
 
