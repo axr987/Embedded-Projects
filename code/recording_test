@@ -1,0 +1,75 @@
+import cv2
+from picamera2 import Picamera2, Preview
+import time
+import os
+from datetime import datetime
+
+state = 0  # change to real state select code later
+output_dir = "captures"
+os.makedirs(output_dir, exist_ok=True)
+
+configs = {
+    0: {"res": (640, 480), "hz": 3, "mode": "img"},
+    1: {"res": (1280, 720), "hz": 6, "mode": "img"}, 
+    2: {"res": (1920, 1080), "hz": 30, "mode": "video"}
+}
+
+# set config based on state
+config = configs[state]
+width, height = config["res"]
+mode, hz = config["mode"], config["hz"]
+
+print(f"State {state}: {width}x{height} {mode} @ {hz}Hz")
+
+# set video res
+cap = cv2.VideoCapture(0)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+cap.set(cv2.CAP_PROP_FPS, 60)
+
+video_writer = None
+last_save_time = time.time()
+
+print("Recording... Press 'q' to quit")
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+    
+    now = time.time()
+    
+    if mode == "img":
+        if now - last_save_time >= 1.0 / hz:
+            resized = cv2.resize(frame, (width, height))
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+            filename = os.path.join(output_dir, f"s{state}_{timestamp}.jpg")
+            
+            # JPEG compress
+            cv2.imwrite(filename, resized, [cv2.IMWRITE_JPEG_QUALITY, 90])
+            print(f"IMG: {os.path.basename(filename)}")
+            
+            last_save_time = now
+    
+    elif mode == "video":
+        if video_writer is None:
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            filename = os.path.join(output_dir, f"s{state}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
+            video_writer = cv2.VideoWriter(filename, fourcc, hz, (width, height))
+            print(f"VIDEO: {os.path.basename(filename)}")
+        
+        resized = cv2.resize(frame, (width, height))
+        video_writer.write(resized)
+    
+    # preview
+    preview = cv2.resize(frame, (640, 480))
+    cv2.imshow("Preview", preview)
+    
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap.release()
+if video_writer:
+    video_writer.release()
+cv2.destroyAllWindows()
+print("Done.")
