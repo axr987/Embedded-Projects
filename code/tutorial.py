@@ -1,11 +1,10 @@
-from picamera2 import Picamera2, MappedArray, Preview
+from picamera2 import Picamera2, MappedArray #, Preview
 from picamera2.encoders import H264Encoder
 import cv2
-import time
+# import time
 import numpy as np
 from datetime import datetime
-from os import path
-import asyncio
+# from os import path
 
 #cap = cv2.VideoCapture(0)
 
