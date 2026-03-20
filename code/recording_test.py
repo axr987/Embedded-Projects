@@ -90,7 +90,7 @@ for frame in generate_frames():
             print(f"VIDEO: {os.path.basename(filename)}")
     
     resized = cv.resize(frame, (640, 480))
-    if frame_count % 30 == 0:
+    if frame_count % 10 == 0:
         full_bodies = detectFullBody(resized)
     if len(full_bodies) > 0:
         for (x,y,w,h) in full_bodies:
@@ -107,6 +107,7 @@ for frame in generate_frames():
     video_writer.write(frame) if video_writer else None
     if cv.waitKey(10) & 0xFF == ord('q'):
         break
+    frame_count += 1
 
 picam2.stop()
 if video_writer:
