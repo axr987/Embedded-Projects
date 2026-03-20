@@ -49,7 +49,7 @@ configs = {
 # set config based on state
 config = configs[state]
 width, height = config["size"]
-mode, hz = config["mode"], 1e6 / config["FrameDurationLimits"][0] if config["FrameDurationLimits"][0] != 0 else float('inf')
+mode, hz = config["mode"], config["FrameDurationLimits"][0] if config["FrameDurationLimits"][0] != 0 else float('inf')
 
 print(f"State {state}: {width}x{height} {mode} @ {hz}Hz")
 
