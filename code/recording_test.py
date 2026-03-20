@@ -119,14 +119,13 @@ for frame in generate_frames():
         cv.imshow('Capture - Full body detection', frame)
     
     # delay
-    cv.waitKey(10)
-    
+    if cv.waitKey(10) & 0xFF == ord('q'):
+        break
+        
     # save the video
     video_writer.write(frame) if video_writer else None
     
-    # another delay
-    if cv.waitKey(10) & 0xFF == ord('q'):
-        break
+  
     frame_count += 1
 
 # cleanup 
