@@ -92,13 +92,13 @@ for frame in generate_frames():
     resized = cv.resize(frame, (640, 480))
     if frame_count % 10 == 0:
         full_bodies = detectFullBody(resized)
-    if len(full_bodies) > 0:
         for (x,y,w,h) in full_bodies:
             x = int(x * width / 640)
             y = int(y * height / 480)
             w = int(w * width / 640)
             h = int(h * height / 480)
             center = (x + w//2, y + h//2)
+    if len(full_bodies) > 0: 
             frame = cv.rectangle(frame, center,(x + w, y + h),(255,0,0),2)
             cv.imshow('Capture - Full body detection', frame)
     else:
