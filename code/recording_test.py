@@ -8,6 +8,7 @@ import argparse
 state = 2  # change to real state select code later
 frame_count = 0
 output_dir = "captures"
+scale_factor = 1.1
 os.makedirs(output_dir, exist_ok=True)
 
 # detection function
@@ -18,7 +19,7 @@ def detectFullBody(frame):
     frame_gray = cv.equalizeHist(frame_gray)
 
     #-- detect full bodies
-    full_bodies = fullbody_cascade.detectMultiScale(frame_gray,scaleFactor = 1.01, minNeighbors=5)
+    full_bodies = fullbody_cascade.detectMultiScale(frame_gray, scaleFactor=scale_factor, minNeighbors=3)
     return full_bodies
 
 # frame generation function
@@ -109,12 +110,14 @@ for frame in generate_frames():
             y = int(y * height / 480)
             w = int(w * width / 640)
             h = int(h * height / 480)
-            center = (x + w//2, y + h//2)
+            top_left = (x, y)
+            bottom_right = (x + w, y + h)
     # shows the boxes if drawn
     if len(full_bodies) > 0: 
-            frame = cv.rectangle(frame, center,(x + w, y + h),(255,0,0),2)
+            # rectangle uses top left corner and bottom right corner
+            frame = cv.rectangle(frame, top_left, bottom_right, (255,0,0), 2)
             cv.imshow('Capture - Full body detection', frame)
-    # shows the frame if not drawn
+    # shows just the frame if no boxes are drawn
     else:
         cv.imshow('Capture - Full body detection', frame)
     
