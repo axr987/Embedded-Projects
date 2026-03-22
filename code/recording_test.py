@@ -5,7 +5,7 @@ import os
 from datetime import datetime
 import argparse
 
-state = 2  # change to real state select code later
+state = 2 # change to real state select code later
 frame_count = 0
 output_dir = "captures"
 scale_factor = 1.1
@@ -13,8 +13,6 @@ os.makedirs(output_dir, exist_ok=True)
 
 # detection function
 def detectFullBody(frame):
-    print("Start frame")
-    print(datetime.now().strftime("%Y-%m-%d %H:%M:%S_%f"))
     frame_gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
     frame_gray = cv.equalizeHist(frame_gray)
 
@@ -64,7 +62,7 @@ config = configs[state]
 width, height = config["res"]
 mode, hz = config["mode"], config["hz"]
 
-picam2.configure(picam2.create_preview_configuration(main={"format": "RGB888", "size": (1920, 1080)}))
+picam2.configure(picam2.create_preview_configuration(main={"format": "RGB888", "size": (width, height)}))
 picam2.start()
 print(f"State {state}: {width}x{height} {mode} @ {hz}Hz")
 
@@ -79,27 +77,14 @@ for frame in generate_frames():
 
     now = time.time()
 
-
-    # image mode code
-    if mode == "img":
-        if now - last_save_time >= 1.0 / hz:
-            resized = cv.resize(frame, (width, height))
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-            filename = os.path.join(output_dir, f"s{state}_{timestamp}.jpg")
-            
-            # JPEG compress
-            cv.imwrite(filename, resized, [cv.IMWRITE_JPEG_QUALITY, 90])
-            print(f"IMG: {os.path.basename(filename)}")
-            
-            last_save_time = now
-
     # video mode code
-    elif mode == "video":
+    if mode == "video":
         if video_writer is None:
             fourcc = cv.VideoWriter_fourcc(*'mp4v')
             filename = os.path.join(output_dir, f"s{state}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
             video_writer = cv.VideoWriter(filename, fourcc, hz, (width, height))
             print(f"VIDEO: {os.path.basename(filename)}")
+    
     resized = cv.resize(frame, (640, 480))
 
     # drawing the boxes after a set of frames
@@ -110,11 +95,12 @@ for frame in generate_frames():
             y = int(y * height / 480)
             w = int(w * width / 640)
             h = int(h * height / 480)
+    # shows the boxes if drawn
+    print(width, height)
+    if len(full_bodies) > 0:
+            # rectangle uses top left corner and bottom right corner
             top_left = (x, y)
             bottom_right = (x + w, y + h)
-    # shows the boxes if drawn
-    if len(full_bodies) > 0: 
-            # rectangle uses top left corner and bottom right corner
             frame = cv.rectangle(frame, top_left, bottom_right, (255,0,0), 2)
             cv.imshow('Capture - Full body detection', frame)
     # shows just the frame if no boxes are drawn
@@ -128,6 +114,17 @@ for frame in generate_frames():
     # save the video
     video_writer.write(frame) if video_writer else None
     
+    # image mode code
+    if mode == "img":
+        if now - last_save_time >= 1.0 / hz:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+            filename = os.path.join(output_dir, f"s{state}_{timestamp}.jpg")
+            
+            # JPEG compress
+            cv.imwrite(filename, frame, [cv.IMWRITE_JPEG_QUALITY, 90])
+            print(f"IMG: {os.path.basename(filename)}")
+            
+            last_save_time = now
   
     frame_count += 1
 
