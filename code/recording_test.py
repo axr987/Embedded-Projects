@@ -5,11 +5,29 @@ import os
 from datetime import datetime
 import argparse
 
-state = 2 # change to real state select code later
+state = 0 # change to real state select code later
 frame_count = 0
 output_dir = "captures"
 scale_factor = 1.1
+video_writer = None
+last_save_time = time.time()
 os.makedirs(output_dir, exist_ok=True)
+
+# Create argument parser for cascade and camera 
+parser = argparse.ArgumentParser(description='Code for Cascade Classifier tutorial.')
+parser.add_argument('--fullbody_cascade', help='Path to face cascade.', default='../data/haarcascade_fullbody.xml')
+parser.add_argument('--camera', help='Camera divide number.', type=int, default=0)
+args = parser.parse_args()
+
+fullbody_cascade_name = args.fullbody_cascade
+
+# Modify resolution below
+# picam2.configure(picam2.create_preview_configuration(main={"format": "RGB888", "size": (640, 480)}))
+configs = {
+    0: {"res": (640, 480), "hz": 3, "mode": "img"},
+    1: {"res": (1280, 720), "hz": 6, "mode": "img"}, 
+    2: {"res": (1920, 1080), "hz": 30, "mode": "video"}
+}
 
 # detection function
 def detectFullBody(frame):
@@ -29,18 +47,22 @@ def generate_frames():
         else:
             print("Failed to capture frame")
 
-# Create argument parser for cascade and camera 
-parser = argparse.ArgumentParser(description='Code for Cascade Classifier tutorial.')
-parser.add_argument('--fullbody_cascade', help='Path to face cascade.', default='../data/haarcascade_fullbody.xml')
-parser.add_argument('--camera', help='Camera divide number.', type=int, default=0)
-args = parser.parse_args()
+def config_state(state):
+    picam2.stop()
+    if video_writer:
+        video_writer.release()
+    # set config based on state
+    config = configs[state]
+    width, height = config["res"]
+    mode, hz = config["mode"], config["hz"]
 
-fullbody_cascade_name = args.fullbody_cascade
-
-fullbody_cascade = cv.CascadeClassifier()
-
+    picam2.configure(picam2.create_preview_configuration(main={"format": "RGB888", "size": (width, height)}))
+    picam2.start()
+    print(f"State {state}: {width}x{height} {mode} @ {hz}Hz")
+    return width, height, mode, hz
 
 #-- load cascade
+fullbody_cascade = cv.CascadeClassifier()
 if not fullbody_cascade.load(os.path.join("code", fullbody_cascade_name)):
     print('--(!)Error loading full body cascade')
     exit(0)
@@ -48,27 +70,7 @@ if not fullbody_cascade.load(os.path.join("code", fullbody_cascade_name)):
 # turn camera on
 picam2 = Picamera2()
 
-
-# Modify resolution below
-# picam2.configure(picam2.create_preview_configuration(main={"format": "RGB888", "size": (640, 480)}))
-configs = {
-    0: {"res": (640, 480), "hz": 3, "mode": "img"},
-    1: {"res": (1280, 720), "hz": 6, "mode": "img"}, 
-    2: {"res": (1920, 1080), "hz": 30, "mode": "video"}
-}
-
-# set config based on state
-config = configs[state]
-width, height = config["res"]
-mode, hz = config["mode"], config["hz"]
-
-picam2.configure(picam2.create_preview_configuration(main={"format": "RGB888", "size": (width, height)}))
-picam2.start()
-print(f"State {state}: {width}x{height} {mode} @ {hz}Hz")
-
-
-video_writer = None
-last_save_time = time.time()
+width, height, mode, hz = config_state(state)
 
 print("Recording... Press 'q' to quit")
 
@@ -108,8 +110,15 @@ for frame in generate_frames():
         cv.imshow('Capture - Full body detection', frame)
     
     # delay
-    if cv.waitKey(10) & 0xFF == ord('q'):
-        break
+    buttonpress = cv.waitKey(10) & 0xFF
+    if buttonpress == ord('q'):
+            break
+    elif buttonpress == ord('0'):
+            width, height, mode, hz = config_state(0)
+    elif buttonpress == ord('1'):
+            width, height, mode, hz = config_state(1)
+    elif buttonpress == ord('2'):
+            width, height, mode, hz = config_state(2)
         
     # save the video
     video_writer.write(frame) if video_writer else None
