@@ -12,12 +12,17 @@ import os
 from datetime import datetime
 import argparse
 import multiprocessing as mp
+import subprocess
 
 # Global variables
 state = 0 # change to real state select code later
 frame_count = 0 # Replace with threading later
+# Main output folder
 output_dir = "captures"
 os.makedirs(output_dir, exist_ok=True)
+# Temporary streaming folder
+stream_dir = "temp_stream"
+os.makedirs(stream_dir, exist_ok=True)
 scale_factor = 1.3 # For rescaling the image for bounding box drawing
 video_writer = None # Required for video writing
 last_save_time = time.time() # For saving images at a regular interval
@@ -97,6 +102,8 @@ width, height, mode, hz = config_state(state)
 
 print("Recording... Press 'q' to quit")
 
+subprocess.run(['sudo', 'bash', 'send_image_geeqie.sh'], check=True)
+
 # loop time
 for frame in generate_frames():
 
@@ -128,6 +135,8 @@ for frame in generate_frames():
             bottom_right = (x + w, y + h)
             frame = cv.rectangle(frame, top_left, bottom_right, (255,0,0), 2)
         cv.imshow('Capture - Full body detection', frame)
+        cv.imwrite(os.path.join(stream_dir, "frame.jpg"), frame, [cv.IMWRITE_JPEG_QUALITY, 90])
+        subprocess.run(['sudo', 'bash', 'send_image_geeqie.sh'], check=True)
     # shows just the frame if no boxes are drawn
     else:
         cv.imshow('Capture - Full body detection', frame)
@@ -168,6 +177,9 @@ for frame in generate_frames():
             last_save_time = now
   
     frame_count += 1
+    if frame_count > 300: # Just a safety to prevent infinite loops during testing
+        print("Reached 300 frames, exiting loop.")
+        break
 
 # cleanup 
 picam2.stop()
