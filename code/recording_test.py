@@ -5,13 +5,14 @@ import os
 from datetime import datetime
 import argparse
 
+# Global variables
 state = 0 # change to real state select code later
-frame_count = 0
+frame_count = 0 # Replace with threading later
 output_dir = "captures"
-scale_factor = 1.1
-video_writer = None
-last_save_time = time.time()
 os.makedirs(output_dir, exist_ok=True)
+scale_factor = 1.1 # For rescaling the image for bounding box drawing
+video_writer = None # Required for video writing
+last_save_time = time.time() # For saving images at a regular interval
 
 # Create argument parser for cascade and camera 
 parser = argparse.ArgumentParser(description='Code for Cascade Classifier tutorial.')
@@ -78,14 +79,6 @@ print("Recording... Press 'q' to quit")
 for frame in generate_frames():
 
     now = time.time()
-
-    # video mode code
-    if mode == "video":
-        if video_writer is None:
-            fourcc = cv.VideoWriter_fourcc(*'mp4v')
-            filename = os.path.join(output_dir, f"s{state}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
-            video_writer = cv.VideoWriter(filename, fourcc, hz, (width, height))
-            print(f"VIDEO: {os.path.basename(filename)}")
     
     resized = cv.resize(frame, (640, 480))
 
@@ -120,8 +113,14 @@ for frame in generate_frames():
     elif buttonpress == ord('2'):
             width, height, mode, hz = config_state(2)
         
-    # save the video
-    video_writer.write(frame) if video_writer else None
+    # video mode code
+    if mode == "video":
+        if video_writer is None:
+            fourcc = cv.VideoWriter_fourcc(*'mp4v')
+            filename = os.path.join(output_dir, f"s{state}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
+            video_writer = cv.VideoWriter(filename, fourcc, hz, (width, height))
+            print(f"VIDEO: {os.path.basename(filename)}")
+        video_writer.write(frame) if video_writer else None
     
     # image mode code
     if mode == "img":
