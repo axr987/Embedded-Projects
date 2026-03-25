@@ -18,7 +18,7 @@ state = 0 # change to real state select code later
 frame_count = 0 # Replace with threading later
 output_dir = "captures"
 os.makedirs(output_dir, exist_ok=True)
-scale_factor = 1.1 # For rescaling the image for bounding box drawing
+scale_factor = 1.3 # For rescaling the image for bounding box drawing
 video_writer = None # Required for video writing
 last_save_time = time.time() # For saving images at a regular interval
 frame_queue = mp.Queue(maxsize=1) # Queue for sharing frames between processes
@@ -55,11 +55,9 @@ def detectFullBody(frame_queue, box_queue):
             frame = frame_queue.get()
             frame_gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
             frame_gray = cv.equalizeHist(frame_gray)
-            #-- detect full bodies
             full_bodies = fullbody_cascade.detectMultiScale(frame_gray, scaleFactor=scale_factor, minNeighbors=3)
-            if len(full_bodies) > 0:
-                # print(f"Putting full bodies in queue")
-                box_queue.put(full_bodies)
+            # print(f"Putting full bodies in queue: {full_bodies}")
+            box_queue.put(full_bodies)
         else:
             time.sleep(0.1) # Sleep briefly to avoid unnecessary CPU usage
 
