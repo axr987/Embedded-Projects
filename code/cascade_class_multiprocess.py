@@ -17,12 +17,16 @@ import subprocess
 # Global variables
 state = 0 # change to real state select code later
 frame_count = 0 # Replace with threading later
+
 # Main output folder
 output_dir = "captures"
 os.makedirs(output_dir, exist_ok=True)
+
 # Temporary streaming folder
 stream_dir = "temp_stream"
 os.makedirs(stream_dir, exist_ok=True)
+
+# More global variables
 scale_factor = 1.3 # For rescaling the image for bounding box drawing
 video_writer = None # Required for video writing
 last_save_time = time.time() # For saving images at a regular interval
@@ -30,6 +34,8 @@ frame_queue = mp.Queue(maxsize=1) # Queue for sharing frames between processes
 box_queue = mp.Queue(maxsize=1) # Queue for sharing bounding boxes between processes
 full_bodies = [] # List to hold detected bounding boxes
 full_bodies_scaled = [] # List to hold scaled bounding boxes for drawing
+frame_max = 10000 # Just a safety to prevent infinite loops during testing
+send_over_network = True # Set to True to enable sending images over the network to geeqie
 
 # Create argument parser for cascade and camera 
 parser = argparse.ArgumentParser(description='Code for Cascade Classifier tutorial.')
@@ -106,8 +112,6 @@ subprocess.run(['sudo', 'bash', 'send_image_geeqie.sh'], check=True)
 
 # loop time
 for frame in generate_frames():
-
-    now = time.time()
     
     resized = cv.resize(frame, (640, 480))
     if frame_queue.empty():
@@ -136,7 +140,8 @@ for frame in generate_frames():
             frame = cv.rectangle(frame, top_left, bottom_right, (255,0,0), 2)
         cv.imshow('Capture - Full body detection', frame)
         cv.imwrite(os.path.join(stream_dir, "frame.jpg"), frame, [cv.IMWRITE_JPEG_QUALITY, 90])
-        subprocess.run(['sudo', 'bash', 'send_image_geeqie.sh'], check=True)
+        if send_over_network:
+            subprocess.run(['sudo', 'bash', 'send_image_geeqie.sh'], check=True)
     # shows just the frame if no boxes are drawn
     else:
         cv.imshow('Capture - Full body detection', frame)
@@ -166,18 +171,19 @@ for frame in generate_frames():
     
     # image mode code
     if mode == "img":
+        now = time.time()
         if now - last_save_time >= 1.0 / hz:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
             filename = os.path.join(output_dir, f"s{state}_{timestamp}.jpg")
             
+            last_save_time = now
+
             # JPEG compress
             cv.imwrite(filename, frame, [cv.IMWRITE_JPEG_QUALITY, 90])
             # print(f"IMG: {os.path.basename(filename)}")
             
-            last_save_time = now
-  
-    frame_count += 1
-    if frame_count > 300: # Just a safety to prevent infinite loops during testing
+    frame_count += hz / 30
+    if frame_count > frame_max: # Just a safety to prevent infinite loops during testing
         print("Reached 300 frames, exiting loop.")
         break
 
