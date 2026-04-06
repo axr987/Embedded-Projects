@@ -28,15 +28,21 @@ stop_event = mp.Event()
 
 # More global variables
 scale_factor = 1.3 # For rescaling the image for bounding box drawing
-video_writer = None # Required for video writing
+video_writer1 = None # Required for video writing
+video_writer2 = None # Required for video writing
 last_save_time = time.time() # For saving images at a regular interval
-frame_queue = mp.Queue(maxsize=2) # Queue for sharing frames between processes
-box_queue = mp.Queue(maxsize=2) # Queue for sharing bounding boxes between processes
-full_bodies = [] # List to hold detected bounding boxes
-full_bodies_scaled = [] # List to hold scaled bounding boxes for drawing
+frame_queue1 = mp.Queue(maxsize=2) # Queue for sharing frames between processes
+frame_queue2 = mp.Queue(maxsize=2) # Queue for sharing frames between processes
+box_queue1 = mp.Queue(maxsize=2) # Queue for sharing bounding boxes between processes
+box_queue2 = mp.Queue(maxsize=2) # Queue for sharing bounding boxes between processes
+full_bodies1 = [] # List to hold detected bounding boxes
+full_bodies2 = [] # List to hold detected bounding boxes
+full_bodies_scaled1 = [] # List to hold scaled bounding boxes for drawing
+full_bodies_scaled2 = [] # List to hold scaled bounding boxes for drawing
 frame_max = 10000 # Just a safety to prevent infinite loops during testing
 send_over_network = True # Set to True to enable sending images over the network to geeqie
 last_send_time = time.time() # For sending images at a regular interval
+sequencing_timer = 0
 alarm_timer = 0
 
 # Create argument parser for cascade and camera 
@@ -61,7 +67,8 @@ configs = {
     3: {"res": (1920, 1080), "hz": 30, "mode": "video"}
 }
 
-picam2 = Picamera2()
+picam2 = Picamera2(0)
+picam3 = Picamera2(1)
 
 # detection function
 def detectFullBody(frame_queue, box_queue, stop_event):
@@ -78,39 +85,49 @@ def detectFullBody(frame_queue, box_queue, stop_event):
         box_queue.put(full_bodies)
 
 # frame generation function
-def generate_frames():
+def generate_frames(picam):
     while True:
-        frame = picam2.capture_array()
+        frame = picam.capture_array()
         if frame is not None:
             yield frame
         else:
             print("Failed to capture frame")
 
-def config_state(state):
-    picam2.stop()
-    if video_writer:
-        video_writer.release()
+def config_state(state, picam):
+    picam.stop()
+    if video_writer1:
+        video_writer1.release()
+    if video_writer2:
+        video_writer2.release()
     # set config based on state
     config = configs[state]
     width, height = config["res"]
     mode, hz = config["mode"], config["hz"]
     if state == 2:
         alarm_timer = time.time()
-    elif state == 3:
+    else:
+        alarm_timer = 0
+    if state == 3:
         # Do whatever is done to make the buzzer go off here
         pass
-    picam2.configure(picam2.create_preview_configuration(main={"format": "RGB888", "size": (width, height)}))
-    picam2.start()
+    picam.configure(picam.create_preview_configuration(main={"format": "RGB888", "size": (width, height)}))
+    picam.start()
     print(f"State {state}: {width}x{height} {mode} @ {hz}Hz")
     return width, height, mode, hz, alarm_timer
 
 # Create worker function for box drawing
-worker = mp.Process(target=detectFullBody,
-                    args=(frame_queue, box_queue, stop_event),
+worker1 = mp.Process(target=detectFullBody,
+                    args=(frame_queue1, box_queue1, stop_event),
                     daemon=True) # Set as daemon so it will exit when the main process exits
-worker.start()
+worker1.start()
 
-width, height, mode, hz = config_state(state)
+worker2 = mp.Process(target=detectFullBody,
+                    args=(frame_queue2, box_queue2, stop_event),
+                    daemon=True) # Set as daemon so it will exit when the main process exits
+worker2.start()
+
+width, height, mode, hz, alarm_timer = config_state(state, picam2)
+_, _, _, _, _ = config_state(state, picam3)
 
 print("Recording... Press 'q' to quit")
 
@@ -118,8 +135,13 @@ if send_over_network:
     #subprocess.run(['sudo', 'bash', 'send_image_geeqie.sh'], check=True)
     subprocess.Popen(['sudo', 'bash', 'send_image_geeqie.sh'])
 
+cv.namedWindow('Capture - Full body detection 1')
+cv.namedWindow('Capture - Full body detection 2')
+cv.moveWindow('Capture - Full body detection 1', 40, 40)
+cv.moveWindow('Capture - Full body detection 2', 960, 40)
+
 # loop time
-for frame in generate_frames():
+for frame1, frame2 in zip(generate_frames(picam2), generate_frames(picam3)):
     
     # determine state (get rid of this in final version)
     buttonpress = cv.waitKey(10) & 0xFF
@@ -127,86 +149,131 @@ for frame in generate_frames():
             break
     elif buttonpress == ord('0'):
             state = 0
-            width, height, mode, hz, alarm_timer = config_state(state)
+            width, height, mode, hz, alarm_timer = config_state(state, picam2)
+            _, _, _, _, _ = config_state(state, picam3)
     elif buttonpress == ord('1'):
             state = 1
-            width, height, mode, hz, alarm_timer = config_state(state)
+            width, height, mode, hz, alarm_timer = config_state(state, picam2)
+            _, _, _, _, _ = config_state(state, picam3)
     elif buttonpress == ord('2'):
             state = 2
-            width, height, mode, hz, alarm_timer = config_state(state)
+            width, height, mode, hz, alarm_timer = config_state(state, picam2)
+            _, _, _, _, _ = config_state(state, picam3)
     elif buttonpress == ord('3'):
             state = 3
-            width, height, mode, hz, alarm_timer = config_state(state)
+            width, height, mode, hz, alarm_timer = config_state(state, picam2)
+            _, _, _, _, _ = config_state(state, picam3)
 
-    resized = cv.resize(frame, (640, 480))
+    resized1 = cv.resize(frame1, (640, 480))
+    resized2 = cv.resize(frame2, (640, 480))
     try:
-        frame_queue.put_nowait(resized.copy())
+        frame_queue1.put_nowait(resized1.copy())
+        #print("Put frame")
+    except:
+        pass
+
+    try:
+        frame_queue2.put_nowait(resized2.copy())
         #print("Put frame")
     except:
         pass
 
     try:
         while True:
-            full_bodies = box_queue.get_nowait()
-            print(f"Detected full bodies: {full_bodies}")
+            full_bodies1 = box_queue1.get_nowait()
+            print(f"Detected full bodies: {full_bodies1}")
     except:
         pass
 
-    full_bodies_scaled = []
+    try:
+        while True:
+            full_bodies2 = box_queue2.get_nowait()
+            print(f"Detected full bodies: {full_bodies2}")
+    except:
+        pass
+
+    #full_bodies_scaled1 = []
+    #full_bodies_scaled2 = []
 
     # drawing the boxes when available
-    if len(full_bodies) > 0:
+    if len(full_bodies1) > 0 or len(full_bodies2) > 0:
         if state == 0:
             state = 1
-            width, height, mode, hz = config_state(state)
+            width, height, mode, hz, alarm_timer = config_state(state, picam2)
+            _, _, _, _, _ = config_state(state, picam3)
         else:
-            for (x,y,w,h) in full_bodies:
-                x = int(x * width / 640)
-                y = int(y * height / 480)
-                w = int(w * width / 640)
-                h = int(h * height / 480)
-                # Tuples are immutable, so you have to make a new one to scale it
-                full_bodies_scaled.append((x, y, w, h))
-            for (x,y,w,h) in full_bodies_scaled:
-                # rectangle uses top left corner and bottom right corner
-                top_left = (x, y)
-                bottom_right = (x + w, y + h)
-                frame = cv.rectangle(frame, top_left, bottom_right, (255,0,0), 2)
-            cv.imshow('Capture - Full body detection', frame)
-            cv.imwrite(os.path.join(stream_dir, "frame.jpg"), frame, [cv.IMWRITE_JPEG_QUALITY, 90])
-            if send_over_network and time.time() - last_send_time > 1.0:
-                #subprocess.run(['sudo', 'bash', 'send_image_geeqie.sh'], check=True)
-                subprocess.Popen(['sudo', 'bash', 'send_image_geeqie.sh'])
-                last_send_time = time.time()
+            for targets in [full_bodies1, full_bodies2]:
+                full_bodies_scaled = []
+                for (x,y,w,h) in targets:
+                    x = int(x * width / 640)
+                    y = int(y * height / 480)
+                    w = int(w * width / 640)
+                    h = int(h * height / 480)
+                    # Tuples are immutable, so you have to make a new one to scale it
+                    full_bodies_scaled.append((x, y, w, h))
+                for (x,y,w,h) in full_bodies_scaled:
+                    # rectangle uses top left corner and bottom right corner
+                    top_left = (x, y)
+                    bottom_right = (x + w, y + h)
+                    if (targets == full_bodies1).any():
+                        frame1 = cv.rectangle(frame1, top_left, bottom_right, (255,0,0), 2)
+                        cv.imshow('Capture - Full body detection 1', cv.resize(frame1, (800, 600)))
+                        cv.imwrite(os.path.join(stream_dir, "frame1.jpg"), frame1, [cv.IMWRITE_JPEG_QUALITY, 90])
+                        if send_over_network and time.time() - last_send_time > 1.0:
+                            #subprocess.run(['sudo', 'bash', 'send_image_geeqie.sh'], check=True)
+                            subprocess.Popen(['sudo', 'bash', 'send_image_geeqie.sh'])
+                            last_send_time = time.time()
+                    else:
+                        frame2 = cv.rectangle(frame2, top_left, bottom_right, (255,0,0), 2)
+                        cv.imshow('Capture - Full body detection 2', cv.resize(frame2, (800, 600)))
+                        cv.imwrite(os.path.join(stream_dir, "frame2.jpg"), frame2, [cv.IMWRITE_JPEG_QUALITY, 90])
+                        #if send_over_network and time.time() - last_send_time > 1.0:
+                            #subprocess.run(['sudo', 'bash', 'send_image_geeqie.sh'], check=True)
+                            #subprocess.Popen(['sudo', 'bash', 'send_image_geeqie.sh'])
+                            #last_send_time = time.time()
+                
         if state == 2:
             if time.time() - alarm_timer > 10:
                 state = 3
-                width, height, mode, hz = config_state(state)
+                width, height, mode, hz = config_state(state, picam2)
+                _, _, _, _ = config_state(state, picam3)
     # shows just the frame if no boxes are drawn
     else:
-        cv.imshow('Capture - Full body detection', frame)
-    
+        cv.imshow('Capture - Full body detection 1', cv.resize(frame1, (800, 600)))
+        cv.imshow('Capture - Full body detection 2', cv.resize(frame2, (800, 600)))
+
     # video mode code
     if mode == "video":
-        if video_writer is None:
+        if video_writer1 is None:
             fourcc = cv.VideoWriter_fourcc(*'mp4v')
-            filename = os.path.join(output_dir, f"s{state}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
-            video_writer = cv.VideoWriter(filename, fourcc, hz, (width, height))
+            filename = os.path.join(output_dir, f"cam1_s{state}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
+            video_writer1 = cv.VideoWriter(filename, fourcc, hz, (width, height))
             # print(f"VIDEO: {os.path.basename(filename)}")
-        video_writer.write(frame) if video_writer else None
+        video_writer1.write(frame1) if video_writer1 else None
+        if video_writer2 is None:
+            fourcc = cv.VideoWriter_fourcc(*'mp4v')
+            filename = os.path.join(output_dir, f"cam2_s{state}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
+            video_writer2 = cv.VideoWriter(filename, fourcc, hz, (width, height))
+            # print(f"VIDEO: {os.path.basename(filename)}")
+        video_writer2.write(frame2) if video_writer2 else None
     
     # image mode code
     if mode == "img":
         now = time.time()
         if now - last_save_time >= 1.0 / hz:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-            filename = os.path.join(output_dir, f"s{state}_{timestamp}.jpg")
+            filename = os.path.join(output_dir, f"cam1_s{state}_{timestamp}.jpg")
             
             last_save_time = now
 
             # JPEG compress
-            cv.imwrite(filename, frame, [cv.IMWRITE_JPEG_QUALITY, 90])
+            cv.imwrite(filename, frame1, [cv.IMWRITE_JPEG_QUALITY, 90])
             # print(f"IMG: {os.path.basename(filename)}")
+
+            filename = os.path.join(output_dir, f"cam2_s{state}_{timestamp}.jpg")
+
+            # JPEG compress
+            cv.imwrite(filename, frame2, [cv.IMWRITE_JPEG_QUALITY, 90])
             
     frame_count += hz / 30
     if frame_count > frame_max: # Just a safety to prevent infinite loops during testing
@@ -215,17 +282,26 @@ for frame in generate_frames():
 
 # cleanup 
 stop_event.set()
-worker.join()
+worker1.join()
+worker2.join()
 
-frame_queue.cancel_join_thread()
-frame_queue.close()
+frame_queue1.cancel_join_thread()
+frame_queue1.close()
 
-box_queue.cancel_join_thread()
-box_queue.close()
+frame_queue2.cancel_join_thread()
+frame_queue2.close()
+
+box_queue1.cancel_join_thread()
+box_queue1.close()
+
+box_queue2.cancel_join_thread()
+box_queue2.close()
 
 picam2.stop()
-if video_writer:
-    video_writer.release()
+if video_writer1:
+    video_writer1.release()
+if video_writer2:
+    video_writer2.release()
 cv.destroyAllWindows()
 cv.waitKey(1)
 print("Done.")
