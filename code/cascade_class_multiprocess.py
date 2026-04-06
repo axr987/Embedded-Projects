@@ -1,14 +1,12 @@
-# This is just a reference
-# I think what needs to be done is we need to separate detection in a thread separate from the rest of the code.
-# We might not even need to time how many frames are between drawing bounding boxes.
-# The only shared objects should be the current frame and the detected bounding boxes.
-# Whenever the detection thread is ready, it can update the bounding boxes and sample a new frame from what the main thread has collected.
-# I'm getting tired, so I might do this later.
+# Multiprocessing script with haar cascade classifier
+
+import os
+from pyexpat import model
+os.environ["QT_LOGGING_RULES"] = "*.warning=false" # Suppress warning about missing fonts that aren't really missing
 
 import cv2 as cv
 from picamera2 import Picamera2, Preview
 import time
-import os
 from datetime import datetime
 import argparse
 import multiprocessing as mp
@@ -26,23 +24,26 @@ os.makedirs(output_dir, exist_ok=True)
 stream_dir = "temp_stream"
 os.makedirs(stream_dir, exist_ok=True)
 
+# Event to stop the worker process
+stop_event = mp.Event()
+
 # More global variables
 scale_factor = 1.3 # For rescaling the image for bounding box drawing
 video_writer = None # Required for video writing
 last_save_time = time.time() # For saving images at a regular interval
-frame_queue = mp.Queue(maxsize=1) # Queue for sharing frames between processes
-box_queue = mp.Queue(maxsize=1) # Queue for sharing bounding boxes between processes
+frame_queue = mp.Queue(maxsize=2) # Queue for sharing frames between processes
+box_queue = mp.Queue(maxsize=2) # Queue for sharing bounding boxes between processes
 full_bodies = [] # List to hold detected bounding boxes
 full_bodies_scaled = [] # List to hold scaled bounding boxes for drawing
 frame_max = 10000 # Just a safety to prevent infinite loops during testing
 send_over_network = True # Set to True to enable sending images over the network to geeqie
+last_send_time = time.time() # For sending images at a regular interval
 
 # Create argument parser for cascade and camera 
 parser = argparse.ArgumentParser(description='Code for Cascade Classifier tutorial.')
 parser.add_argument('--fullbody_cascade', help='Path to face cascade.', default='../data/haarcascade_fullbody.xml')
 parser.add_argument('--camera', help='Camera divide number.', type=int, default=0)
 args = parser.parse_args()
-
 fullbody_cascade_name = args.fullbody_cascade
 #-- load cascade
 fullbody_cascade = cv.CascadeClassifier()
@@ -59,18 +60,18 @@ configs = {
 }
 
 # detection function
-def detectFullBody(frame_queue, box_queue):
-    while True:
-        if frame_queue.full():
+def detectFullBody(frame_queue, box_queue, stop_event):
+    while not stop_event.is_set():
+        try:
             # print("Getting frame from queue")
-            frame = frame_queue.get()
-            frame_gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
-            frame_gray = cv.equalizeHist(frame_gray)
-            full_bodies = fullbody_cascade.detectMultiScale(frame_gray, scaleFactor=scale_factor, minNeighbors=3)
-            # print(f"Putting full bodies in queue: {full_bodies}")
-            box_queue.put(full_bodies)
-        else:
-            time.sleep(0.1) # Sleep briefly to avoid unnecessary CPU usage
+            frame = frame_queue.get(timeout=0.5)
+        except:
+            continue
+        frame_gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
+        frame_gray = cv.equalizeHist(frame_gray)
+        full_bodies = fullbody_cascade.detectMultiScale(frame_gray, scaleFactor=scale_factor, minNeighbors=3)
+        # print(f"Putting full bodies in queue: {full_bodies}")
+        box_queue.put(full_bodies)
 
 # frame generation function
 def generate_frames():
@@ -97,7 +98,7 @@ def config_state(state):
 
 # Create worker function for box drawing
 worker = mp.Process(target=detectFullBody,
-                    args=(frame_queue, box_queue),
+                    args=(frame_queue, box_queue, stop_event),
                     daemon=True) # Set as daemon so it will exit when the main process exits
 worker.start()
 
@@ -108,29 +109,39 @@ width, height, mode, hz = config_state(state)
 
 print("Recording... Press 'q' to quit")
 
-subprocess.run(['sudo', 'bash', 'send_image_geeqie.sh'], check=True)
+if send_over_network:
+    #subprocess.run(['sudo', 'bash', 'send_image_geeqie.sh'], check=True)
+    subprocess.Popen(['sudo', 'bash', 'send_image_geeqie.sh'])
 
 # loop time
 for frame in generate_frames():
     
     resized = cv.resize(frame, (640, 480))
-    if frame_queue.empty():
-        # print("Putting frame in queue")
-        frame_queue.put(resized.copy())
+    try:
+        frame_queue.put_nowait(resized.copy())
+        print("Put frame")
+    except:
+        pass
+
+    try:
+        while True:
+            full_bodies = box_queue.get_nowait()
+            print(f"Detected full bodies: {full_bodies}")
+    except:
+        pass
+
+    full_bodies_scaled = []
 
     # drawing the boxes when available
-    if box_queue.full():
-        full_bodies_scaled = [] # Clear the scaled boxes list before adding new ones
-        full_bodies = box_queue.get() 
-        # print(f"Detected full bodies: {full_bodies}")
-        if len(full_bodies) > 0:
-            for (x,y,w,h) in full_bodies:
-                x = int(x * width / 640)
-                y = int(y * height / 480)
-                w = int(w * width / 640)
-                h = int(h * height / 480)
-                # Tuples are immutable, so you have to make a new one to scale it
-                full_bodies_scaled.append((x, y, w, h))
+    if len(full_bodies) > 0:
+        for (x,y,w,h) in full_bodies:
+            x = int(x * width / 640)
+            y = int(y * height / 480)
+            w = int(w * width / 640)
+            h = int(h * height / 480)
+            # Tuples are immutable, so you have to make a new one to scale it
+            full_bodies_scaled.append((x, y, w, h))
+
     # shows the boxes if drawn
     if len(full_bodies_scaled) > 0:
         for (x,y,w,h) in full_bodies_scaled:
@@ -140,8 +151,10 @@ for frame in generate_frames():
             frame = cv.rectangle(frame, top_left, bottom_right, (255,0,0), 2)
         cv.imshow('Capture - Full body detection', frame)
         cv.imwrite(os.path.join(stream_dir, "frame.jpg"), frame, [cv.IMWRITE_JPEG_QUALITY, 90])
-        if send_over_network:
-            subprocess.run(['sudo', 'bash', 'send_image_geeqie.sh'], check=True)
+        if send_over_network and time.time() - last_send_time > 1.0:
+            #subprocess.run(['sudo', 'bash', 'send_image_geeqie.sh'], check=True)
+            subprocess.Popen(['sudo', 'bash', 'send_image_geeqie.sh'])
+            last_send_time = time.time()
     # shows just the frame if no boxes are drawn
     else:
         cv.imshow('Capture - Full body detection', frame)
@@ -149,6 +162,8 @@ for frame in generate_frames():
     # delay
     buttonpress = cv.waitKey(10) & 0xFF
     if buttonpress == ord('q'):
+            stop_event.set()
+            worker.join(timeout=2)
             break
     elif buttonpress == ord('0'):
             width, height, mode, hz = config_state(0)
@@ -188,8 +203,18 @@ for frame in generate_frames():
         break
 
 # cleanup 
+stop_event.set()
+worker.join()
+
+frame_queue.cancel_join_thread()
+frame_queue.close()
+
+box_queue.cancel_join_thread()
+box_queue.close()
+
 picam2.stop()
 if video_writer:
     video_writer.release()
 cv.destroyAllWindows()
+cv.waitKey(1)
 print("Done.")

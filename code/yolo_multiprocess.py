@@ -6,6 +6,14 @@ import os
 from pyexpat import model
 os.environ["QT_LOGGING_RULES"] = "*.warning=false" # Suppress warning about missing fonts that aren't really missing
 
+import warnings
+
+warnings.filterwarnings(
+    "ignore",
+    message=".*torch.cuda.amp.autocast.*",
+    category=FutureWarning
+)
+
 import cv2 as cv
 from picamera2 import Picamera2
 import time
@@ -30,7 +38,6 @@ os.makedirs(stream_dir, exist_ok=True)
 stop_event = mp.Event()
 
 # More global variables
-scale_factor = 1.3 # For rescaling the image for bounding box drawing
 video_writer = None # Required for video writing
 last_save_time = time.time() # For saving images at a regular interval
 frame_queue = mp.Queue(maxsize=2) # Queue for sharing frames between processes
@@ -61,11 +68,14 @@ def detectFullBody(frame_queue, box_queue, stop_event):
             frame = frame_queue.get(timeout=0.5)
         except:
             continue
-        print("Getting frame from queue")
-        frame = frame_queue.get()
+        #print("Getting frame from queue")
+
+        # Just in case it's at this point when q is pressed
+        if stop_event.is_set():
+            break
+
         with torch.no_grad():
             results = model(frame)
-        print("Did the thing")
         boxes = results.xyxy[0].cpu().numpy()
         filtered_boxes = [
             [int(x1), int(y1), int(x2), int(y2)]
@@ -73,8 +83,11 @@ def detectFullBody(frame_queue, box_queue, stop_event):
             if conf >= conf_thresh
         ]
 
-        print(f"Putting full bodies in queue: {filtered_boxes}")
-        box_queue.put(filtered_boxes) # Put bounding boxes in queue
+        #print(f"Putting full bodies in queue: {filtered_boxes}")
+        try:
+            box_queue.put(filtered_boxes, timeout=0.5)
+        except:
+            pass
 
 # frame generation function
 def generate_frames():
@@ -112,8 +125,9 @@ width, height, mode, hz = config_state(state)
 
 print("Recording... Press 'q' to quit")
 
-#subprocess.run(['sudo', 'bash', 'send_image_geeqie.sh'], check=True)
-subprocess.Popen(['sudo', 'bash', 'send_image_geeqie.sh'])
+if send_over_network:
+    #subprocess.run(['sudo', 'bash', 'send_image_geeqie.sh'], check=True)
+    subprocess.Popen(['sudo', 'bash', 'send_image_geeqie.sh'])
 
 # loop time
 for frame in generate_frames():
@@ -121,7 +135,7 @@ for frame in generate_frames():
     resized = cv.resize(frame, (640, 480))
     try:
         frame_queue.put_nowait(resized.copy())
-        print("Put frame")
+        #print("Put frame")
     except:
         pass
 
@@ -147,7 +161,8 @@ for frame in generate_frames():
         cv.imshow('Capture - Full body detection', frame)
         cv.imwrite(os.path.join(stream_dir, "frame.jpg"), frame, [cv.IMWRITE_JPEG_QUALITY, 90])
         if send_over_network and time.time() - last_send_time > 1.0:
-            subprocess.run(['sudo', 'bash', 'send_image_geeqie.sh'], check=True)
+            #subprocess.run(['sudo', 'bash', 'send_image_geeqie.sh'], check=True)
+            subprocess.Popen(['sudo', 'bash', 'send_image_geeqie.sh'])
             last_send_time = time.time()
     # shows just the frame if no boxes are drawn
     else:
@@ -156,7 +171,6 @@ for frame in generate_frames():
     # delay
     buttonpress = cv.waitKey(10) & 0xFF
     if buttonpress == ord('q'):
-            stop_event.set()
             break
     elif buttonpress == ord('0'):
             width, height, mode, hz = config_state(0)
@@ -195,9 +209,19 @@ for frame in generate_frames():
         print("Reached 300 frames, exiting loop.")
         break
 
-# cleanup 
+# cleanup
+stop_event.set()
+worker.join()
+
+frame_queue.cancel_join_thread()
+frame_queue.close()
+
+box_queue.cancel_join_thread()
+box_queue.close()
+
 picam2.stop()
 if video_writer:
     video_writer.release()
 cv.destroyAllWindows()
+cv.waitKey(1)
 print("Done.")
