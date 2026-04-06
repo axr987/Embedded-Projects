@@ -1,25 +1,15 @@
-# Manual picture and video capture with YOLOv5 human detection.
-# Very slow, but would work for birds.
-# Maybe it would be alright for birds when they're sitting mostly still.
+# Multiprocessing script with haar cascade classifier
 
 import os
 os.environ["QT_LOGGING_RULES"] = "*.warning=false" # Suppress warning about missing fonts that aren't really missing
-
-import warnings
-
-warnings.filterwarnings(
-    "ignore",
-    message=".*torch.cuda.amp.autocast.*",
-    category=FutureWarning
-)
 
 import cv2 as cv
 from picamera2 import Picamera2
 import time
 from datetime import datetime
+import argparse
 import multiprocessing as mp
 import subprocess
-import torch
 
 # Global variables
 state = 0 # change to real state select code later
@@ -37,58 +27,55 @@ os.makedirs(stream_dir, exist_ok=True)
 stop_event = mp.Event()
 
 # More global variables
+scale_factor = 1.3 # For rescaling the image for bounding box drawing
 video_writer = None # Required for video writing
 last_save_time = time.time() # For saving images at a regular interval
 frame_queue = mp.Queue(maxsize=2) # Queue for sharing frames between processes
 box_queue = mp.Queue(maxsize=2) # Queue for sharing bounding boxes between processes
 full_bodies = [] # List to hold detected bounding boxes
+full_bodies_scaled = [] # List to hold scaled bounding boxes for drawing
 frame_max = 10000 # Just a safety to prevent infinite loops during testing
 send_over_network = True # Set to True to enable sending images over the network to geeqie
-conf_thresh = 0.35 # Confidence threshold for YOLOv5
-nms_thresh = 0.45 # NMS threshold for YOLOv5
 last_send_time = time.time() # For sending images at a regular interval
+alarm_timer = 0
+
+# Create argument parser for cascade and camera 
+parser = argparse.ArgumentParser(description='Code for Cascade Classifier tutorial.')
+parser.add_argument('--fullbody_cascade', help='Path to face cascade.', default='../data/haarcascade_fullbody.xml')
+parser.add_argument('--camera', help='Camera divide number.', type=int, default=0)
+args = parser.parse_args()
+fullbody_cascade_name = args.fullbody_cascade
+#-- load cascade
+fullbody_cascade = cv.CascadeClassifier()
+if not fullbody_cascade.load(os.path.join("code", fullbody_cascade_name)):
+    print('--(!)Error loading full body cascade')
+    exit(0)
 
 # Modify resolution below
 # picam2.configure(picam2.create_preview_configuration(main={"format": "RGB888", "size": (640, 480)}))
 configs = {
-    0: {"res": (640, 480), "hz": 3, "mode": "img"},
-    1: {"res": (1280, 720), "hz": 6, "mode": "img"}, 
-    2: {"res": (1920, 1080), "hz": 30, "mode": "video"}
+    # State 0 does not record anything, just shows the preview
+    0: {"res": (640, 480), "hz": 3, "mode": "preview"},
+    1: {"res": (640, 480), "hz": 3, "mode": "img"},
+    2: {"res": (1280, 720), "hz": 6, "mode": "img"}, 
+    3: {"res": (1920, 1080), "hz": 30, "mode": "video"}
 }
 
 picam2 = Picamera2()
 
 # detection function
 def detectFullBody(frame_queue, box_queue, stop_event):
-    model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True) # Load YOLOv5 model
-    model.conf = conf_thresh # Set confidence threshold
-    model.iou = nms_thresh # Set NMS threshold
-    model.classes = [0] # Only detect person class (class 0 in COCO dataset)
     while not stop_event.is_set():
         try:
+            # print("Getting frame from queue")
             frame = frame_queue.get(timeout=0.5)
         except:
             continue
-        #print("Getting frame from queue")
-
-        # Just in case it's at this point when q is pressed
-        if stop_event.is_set():
-            break
-
-        with torch.no_grad():
-            results = model(frame)
-        boxes = results.xyxy[0].cpu().numpy()
-        filtered_boxes = [
-            [int(x1), int(y1), int(x2), int(y2)]
-            for x1, y1, x2, y2, conf, cls in boxes
-            if conf >= conf_thresh
-        ]
-
-        #print(f"Putting full bodies in queue: {filtered_boxes}")
-        try:
-            box_queue.put(filtered_boxes, timeout=0.5)
-        except:
-            pass
+        frame_gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
+        frame_gray = cv.equalizeHist(frame_gray)
+        full_bodies = fullbody_cascade.detectMultiScale(frame_gray, scaleFactor=scale_factor, minNeighbors=3)
+        # print(f"Putting full bodies in queue: {full_bodies}")
+        box_queue.put(full_bodies)
 
 # frame generation function
 def generate_frames():
@@ -107,11 +94,15 @@ def config_state(state):
     config = configs[state]
     width, height = config["res"]
     mode, hz = config["mode"], config["hz"]
-
+    if state == 2:
+        alarm_timer = time.time()
+    elif state == 3:
+        # Do whatever is done to make the buzzer go off here
+        pass
     picam2.configure(picam2.create_preview_configuration(main={"format": "RGB888", "size": (width, height)}))
     picam2.start()
     print(f"State {state}: {width}x{height} {mode} @ {hz}Hz")
-    return width, height, mode, hz
+    return width, height, mode, hz, alarm_timer
 
 # Create worker function for box drawing
 worker = mp.Process(target=detectFullBody,
@@ -130,6 +121,23 @@ if send_over_network:
 # loop time
 for frame in generate_frames():
     
+    # determine state (get rid of this in final version)
+    buttonpress = cv.waitKey(10) & 0xFF
+    if buttonpress == ord('q'):
+            break
+    elif buttonpress == ord('0'):
+            state = 0
+            width, height, mode, hz, alarm_timer = config_state(state)
+    elif buttonpress == ord('1'):
+            state = 1
+            width, height, mode, hz, alarm_timer = config_state(state)
+    elif buttonpress == ord('2'):
+            state = 2
+            width, height, mode, hz, alarm_timer = config_state(state)
+    elif buttonpress == ord('3'):
+            state = 3
+            width, height, mode, hz, alarm_timer = config_state(state)
+
     resized = cv.resize(frame, (640, 480))
     try:
         frame_queue.put_nowait(resized.copy())
@@ -137,7 +145,6 @@ for frame in generate_frames():
     except:
         pass
 
-    # drawing the boxes when available
     try:
         while True:
             full_bodies = box_queue.get_nowait()
@@ -145,41 +152,40 @@ for frame in generate_frames():
     except:
         pass
 
-    # shows the boxes if drawn
+    full_bodies_scaled = []
+
+    # drawing the boxes when available
     if len(full_bodies) > 0:
-        for (x1,y1,x2,y2) in full_bodies:
-            x1 = int(x1)
-            y1 = int(y1)
-            x2 = int(x2)
-            y2 = int(y2)
-            # rectangle uses top left corner and bottom right corner
-            top_left = (x1, y1)
-            bottom_right = (x2, y2)
-            frame = cv.rectangle(frame, top_left, bottom_right, (255,0,0), 2)
-        cv.imshow('Capture - Full body detection', frame)
-        cv.imwrite(os.path.join(stream_dir, "frame.jpg"), frame, [cv.IMWRITE_JPEG_QUALITY, 90])
-        if send_over_network and time.time() - last_send_time > 1.0:
-            #subprocess.run(['sudo', 'bash', 'send_image_geeqie.sh'], check=True)
-            subprocess.Popen(['sudo', 'bash', 'send_image_geeqie.sh'])
-            last_send_time = time.time()
+        if state == 0:
+            state = 1
+            width, height, mode, hz = config_state(state)
+        else:
+            for (x,y,w,h) in full_bodies:
+                x = int(x * width / 640)
+                y = int(y * height / 480)
+                w = int(w * width / 640)
+                h = int(h * height / 480)
+                # Tuples are immutable, so you have to make a new one to scale it
+                full_bodies_scaled.append((x, y, w, h))
+            for (x,y,w,h) in full_bodies_scaled:
+                # rectangle uses top left corner and bottom right corner
+                top_left = (x, y)
+                bottom_right = (x + w, y + h)
+                frame = cv.rectangle(frame, top_left, bottom_right, (255,0,0), 2)
+            cv.imshow('Capture - Full body detection', frame)
+            cv.imwrite(os.path.join(stream_dir, "frame.jpg"), frame, [cv.IMWRITE_JPEG_QUALITY, 90])
+            if send_over_network and time.time() - last_send_time > 1.0:
+                #subprocess.run(['sudo', 'bash', 'send_image_geeqie.sh'], check=True)
+                subprocess.Popen(['sudo', 'bash', 'send_image_geeqie.sh'])
+                last_send_time = time.time()
+        if state == 2:
+            if time.time() - alarm_timer > 10:
+                state = 3
+                width, height, mode, hz = config_state(state)
     # shows just the frame if no boxes are drawn
     else:
         cv.imshow('Capture - Full body detection', frame)
     
-    # delay
-    buttonpress = cv.waitKey(10) & 0xFF
-    if buttonpress == ord('q'):
-            break
-    elif buttonpress == ord('0'):
-            width, height, mode, hz = config_state(0)
-            print(f"State {state}: {width}x{height} {mode} @ {hz}Hz")
-    elif buttonpress == ord('1'):
-            width, height, mode, hz = config_state(1)
-            print(f"State {state}: {width}x{height} {mode} @ {hz}Hz")
-    elif buttonpress == ord('2'):
-            width, height, mode, hz = config_state(2)
-            print(f"State {state}: {width}x{height} {mode} @ {hz}Hz")
-
     # video mode code
     if mode == "video":
         if video_writer is None:
@@ -207,7 +213,7 @@ for frame in generate_frames():
         print("Reached 300 frames, exiting loop.")
         break
 
-# cleanup
+# cleanup 
 stop_event.set()
 worker.join()
 

@@ -1,11 +1,10 @@
 # Multiprocessing script with haar cascade classifier
 
 import os
-from pyexpat import model
 os.environ["QT_LOGGING_RULES"] = "*.warning=false" # Suppress warning about missing fonts that aren't really missing
 
 import cv2 as cv
-from picamera2 import Picamera2, Preview
+from picamera2 import Picamera2
 import time
 from datetime import datetime
 import argparse
@@ -59,6 +58,8 @@ configs = {
     2: {"res": (1920, 1080), "hz": 30, "mode": "video"}
 }
 
+picam2 = Picamera2()
+
 # detection function
 def detectFullBody(frame_queue, box_queue, stop_event):
     while not stop_event.is_set():
@@ -102,9 +103,6 @@ worker = mp.Process(target=detectFullBody,
                     daemon=True) # Set as daemon so it will exit when the main process exits
 worker.start()
 
-# turn camera on
-picam2 = Picamera2()
-
 width, height, mode, hz = config_state(state)
 
 print("Recording... Press 'q' to quit")
@@ -116,10 +114,24 @@ if send_over_network:
 # loop time
 for frame in generate_frames():
     
+    # determine state
+    buttonpress = cv.waitKey(10) & 0xFF
+    if buttonpress == ord('q'):
+            break
+    elif buttonpress == ord('0'):
+            state = 0
+            width, height, mode, hz = config_state(state)
+    elif buttonpress == ord('1'):
+            state = 1
+            width, height, mode, hz = config_state(state)
+    elif buttonpress == ord('2'):
+            state = 2
+            width, height, mode, hz = config_state(state)
+
     resized = cv.resize(frame, (640, 480))
     try:
         frame_queue.put_nowait(resized.copy())
-        print("Put frame")
+        #print("Put frame")
     except:
         pass
 
@@ -158,22 +170,6 @@ for frame in generate_frames():
     # shows just the frame if no boxes are drawn
     else:
         cv.imshow('Capture - Full body detection', frame)
-    
-    # delay
-    buttonpress = cv.waitKey(10) & 0xFF
-    if buttonpress == ord('q'):
-            stop_event.set()
-            worker.join(timeout=2)
-            break
-    elif buttonpress == ord('0'):
-            width, height, mode, hz = config_state(0)
-            print(f"State {state}: {width}x{height} {mode} @ {hz}Hz")
-    elif buttonpress == ord('1'):
-            width, height, mode, hz = config_state(1)
-            print(f"State {state}: {width}x{height} {mode} @ {hz}Hz")
-    elif buttonpress == ord('2'):
-            width, height, mode, hz = config_state(2)
-            print(f"State {state}: {width}x{height} {mode} @ {hz}Hz")
 
     # video mode code
     if mode == "video":
