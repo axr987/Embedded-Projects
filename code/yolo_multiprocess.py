@@ -56,7 +56,9 @@ configs = {
     2: {"res": (1920, 1080), "hz": 30, "mode": "video"}
 }
 
-picam2 = Picamera2()
+picam2 = Picamera2(0)
+picam3 = Picamera2(1)
+
 
 # detection function
 def detectFullBody(frame_queue, box_queue, stop_event):

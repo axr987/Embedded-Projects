@@ -44,6 +44,8 @@ send_over_network = True # Set to True to enable sending images over the network
 last_send_time = time.time() # For sending images at a regular interval
 sequencing_timer = 0
 alarm_timer = 0
+alarm_states = 0
+approach_scale = 2
 
 # Create argument parser for cascade and camera 
 parser = argparse.ArgumentParser(description='Code for Cascade Classifier tutorial.')
@@ -107,7 +109,10 @@ def config_state(state, picam):
         alarm_timer = time.time()
     else:
         alarm_timer = 0
-    if state == 3:
+    #if state == 3:
+   #    alarm_states = 1
+   #else:
+    #    alarm_states = 0
         # Do whatever is done to make the buzzer go off here
         pass
     picam.configure(picam.create_preview_configuration(main={"format": "RGB888", "size": (width, height)}))
@@ -137,8 +142,8 @@ if send_over_network:
 
 cv.namedWindow('Capture - Full body detection 1')
 cv.namedWindow('Capture - Full body detection 2')
-cv.moveWindow('Capture - Full body detection 1', 40, 40)
-cv.moveWindow('Capture - Full body detection 2', 960, 40)
+cv.moveWindow('Capture - Full body detection 1', 40, 50)
+cv.moveWindow('Capture - Full body detection 2', 960, 50)
 
 # loop time
 for frame1, frame2 in zip(generate_frames(picam2), generate_frames(picam3)):
@@ -213,6 +218,19 @@ for frame1, frame2 in zip(generate_frames(picam2), generate_frames(picam3)):
                     full_bodies_scaled.append((x, y, w, h))
                 for (x,y,w,h) in full_bodies_scaled:
                     # rectangle uses top left corner and bottom right corner
+                    
+                    # code for switching to state 2 from 1 vvv
+                    current_target_area = (x + w)*(y + h)
+
+                    if current_target_area > (past_target_area*approach_scale) and state == 1: # not sure if syntax is right
+                        state = 2
+                        saved_past_target_area = past_target_area
+                        width, height, mode, hz, alarm_timer = config_state(state, picam2)
+                        _, _, _, _, _ = config_state(state, picam3)
+
+                    past_target_area = current_target_area
+
+
                     top_left = (x, y)
                     bottom_right = (x + w, y + h)
                     if (targets == full_bodies1).any():
@@ -235,10 +253,25 @@ for frame1, frame2 in zip(generate_frames(picam2), generate_frames(picam3)):
         if state == 2:
             if time.time() - alarm_timer > 10:
                 state = 3
-                width, height, mode, hz = config_state(state, picam2)
-                _, _, _, _ = config_state(state, picam3)
+                alarming_timer = time.time()
+                #width, height, mode, hz, alarm_timer = config_state(state, picam2)
+                #_, _, _, _, _ = config_state(state, picam3)
+            if current_target_area < saved_past_target_area and time.time() - alarm_timer > 1:
+                state = 1
+
+        if state == 3:
+            # do the alarm turning on stuff
+            if alarming_timer > 5 # something to make sure alarm can turn off eventually
+                state = 1
+            # do alarm turn off stuff
+
+
     # shows just the frame if no boxes are drawn
     else:
+        if last_send_time - time.time() > 5:
+            state = 0
+
+
         cv.imshow('Capture - Full body detection 1', cv.resize(frame1, (800, 600)))
         cv.imshow('Capture - Full body detection 2', cv.resize(frame2, (800, 600)))
 
@@ -277,8 +310,16 @@ for frame1, frame2 in zip(generate_frames(picam2), generate_frames(picam3)):
             
     frame_count += hz / 30
     if frame_count > frame_max: # Just a safety to prevent infinite loops during testing
-        print("Reached 300 frames, exiting loop.")
+        print("Reached 10000 frames, exiting loop.")
         break
+
+
+    if alarm_states == 1:
+        hi=1 # do whatever to make buzzer turn on
+    else: 
+        #b= make sure buzzer turns off
+
+
 
 # cleanup 
 stop_event.set()
