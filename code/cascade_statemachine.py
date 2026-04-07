@@ -261,7 +261,7 @@ for frame1, frame2 in zip(generate_frames(picam2), generate_frames(picam3)):
 
         if state == 3:
             # do the alarm turning on stuff
-            if alarming_timer > 5 # something to make sure alarm can turn off eventually
+            if alarming_timer > 5: # something to make sure alarm can turn off eventually
                 state = 1
             # do alarm turn off stuff
 
@@ -316,7 +316,8 @@ for frame1, frame2 in zip(generate_frames(picam2), generate_frames(picam3)):
 
     if alarm_states == 1:
         hi=1 # do whatever to make buzzer turn on
-    else: 
+    else:
+        hi=0
         #b= make sure buzzer turns off
 
 

@@ -40,7 +40,7 @@ last_send_time = time.time() # For sending images at a regular interval
 
 # Create argument parser for cascade and camera 
 parser = argparse.ArgumentParser(description='Code for Cascade Classifier tutorial.')
-parser.add_argument('--fullbody_cascade', help='Path to face cascade.', default='../data/haarcascade_fullbody.xml')
+parser.add_argument('--fullbody_cascade', help='Path to face cascade.', default='../data/bird-cascade.xml')
 parser.add_argument('--camera', help='Camera divide number.', type=int, default=0)
 args = parser.parse_args()
 fullbody_cascade_name = args.fullbody_cascade
@@ -70,7 +70,7 @@ def detectFullBody(frame_queue, box_queue, stop_event):
             continue
         frame_gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
         frame_gray = cv.equalizeHist(frame_gray)
-        full_bodies = fullbody_cascade.detectMultiScale(frame_gray, scaleFactor=scale_factor, minNeighbors=3)
+        full_bodies = fullbody_cascade.detectMultiScale(frame_gray, scaleFactor=scale_factor, minNeighbors=10)
         # print(f"Putting full bodies in queue: {full_bodies}")
         box_queue.put(full_bodies)
 

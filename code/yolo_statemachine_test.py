@@ -7,10 +7,15 @@ import cv2 as cv
 from picamera2 import Picamera2
 import time
 from datetime import datetime
-import argparse
 import multiprocessing as mp
 import subprocess
-from ultralytics import YOLO  # pip install ultralytics
+from ultralytics import YOLO
+import RPi.GPIO as GPIO
+
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(18, GPIO.OUT)  # Alarm output pin
+buzzer_pwm = GPIO.PWM(18, 523)  # Buzzer on GPIO 18 at 1kHz
+buzzer_pwm.start(0)  # Start with buzzer off
 
 # Global variables
 state = 0
@@ -28,7 +33,7 @@ os.makedirs(stream_dir, exist_ok=True)
 stop_event = mp.Event()
 
 # More global variables
-scale_factor = 1.0  # YOLO uses normalized coords, no scaling needed
+scale_factor = 1.0
 video_writer1 = None
 video_writer2 = None
 last_save_time = time.time()
@@ -42,11 +47,16 @@ frame_max = 10000
 send_over_network = True
 last_send_time = time.time()
 approach_scale = 2
-past_target_area1 = 0  # Fixed: Initialize per-camera areas
+past_target_area1 = 0
 past_target_area2 = 0
+note_interval = 2 ** (1/12)
+note_start = 523
+alarm_last_step = time.time()
+alarm_step = 0
+alarm_active = False
 
 # Load YOLO model (person class: 0)
-model = YOLO('yolov8n.pt')  # Or yolov8s.pt for better accuracy
+model = YOLO('yolov5s.pt')
 
 configs = {
     0: {"res": (640, 480), "hz": 3, "mode": "preview"},
@@ -57,6 +67,14 @@ configs = {
 
 picam2 = Picamera2(0)
 picam3 = Picamera2(1)
+
+def cleanup_GPIO():
+    try:
+        buzzer_pwm.ChangeDutyCycle(0)
+        buzzer_pwm.stop()
+    except:
+        pass
+    GPIO.cleanup()
 
 # YOLO detection function (class 0 = person)
 def detectFullBody(frame_queue, box_queue, stop_event):
@@ -71,8 +89,7 @@ def detectFullBody(frame_queue, box_queue, stop_event):
         if results[0].boxes is not None:
             for box in results[0].boxes.xyxy.cpu().numpy():
                 x1, y1, x2, y2 = map(int, box)
-                w, h = x2 - x1, y2 - y1
-                boxes.append((x1, y1, w, h))
+                boxes.append((x1, y1, x2, y2))
         box_queue.put(boxes)
 
 def generate_frames(picam):
@@ -101,6 +118,31 @@ def config_state(state, picam):
     print(f"State {state}: {width}x{height} {mode} @ {hz}Hz")
     return width, height, mode, hz, alarm_timer
 
+def update_alarm():
+    global alarm_last_step, alarm_step
+
+    now = time.time()
+
+    # timing for each step
+    intervals = [0.05, 0.05, 0.10, 0.05]
+    freqs = [
+        note_start,
+        note_interval * note_start,
+        note_interval ** 11 * note_start,
+        None  # silence
+    ]
+
+    if now - alarm_last_step >= intervals[alarm_step]:
+        alarm_last_step = now
+
+        if freqs[alarm_step] is not None:
+            buzzer_pwm.ChangeDutyCycle(50)
+            buzzer_pwm.ChangeFrequency(freqs[alarm_step])
+        else:
+            buzzer_pwm.ChangeDutyCycle(0)
+
+        alarm_step = (alarm_step + 1) % len(intervals)
+
 # Start workers
 worker1 = mp.Process(target=detectFullBody, args=(frame_queue1, box_queue1, stop_event), daemon=True)
 worker1.start()
@@ -120,7 +162,7 @@ cv.namedWindow('Capture - Full body detection 2')
 cv.moveWindow('Capture - Full body detection 1', 40, 50)
 cv.moveWindow('Capture - Full body detection 2', 960, 50)
 
-alarming_timer = 0
+alarm_on_timer = 0
 alarm_states = 0
 
 # Main loop
@@ -150,7 +192,6 @@ for frame1, frame2 in zip(generate_frames(picam2), generate_frames(picam3)):
     except: pass
 
     detections = [(full_bodies1, frame1, 1), (full_bodies2, frame2, 2)]
-    state_change = False
 
     for full_bodies, frame, cam_id in detections:
         if len(full_bodies) > 0:
@@ -158,13 +199,15 @@ for frame1, frame2 in zip(generate_frames(picam2), generate_frames(picam3)):
                 state = 1
                 width, height, mode, hz, alarm_timer = config_state(state, picam2)
                 _, _, _, _, _ = config_state(state, picam3)
-                state_change = True
 
-            # Scale boxes to full res (YOLO already pixel coords)
-            full_bodies_scaled = [(int(x), int(y), int(w), int(h)) for x, y, w, h in full_bodies]
+            full_bodies_scaled = [(int(x1), int(y1), int(x2), int(y2)) for x1, y1, x2, y2 in full_bodies]
             
-            for x, y, w, h in full_bodies_scaled:
-                current_target_area = w * h
+            for x1, y1, x2, y2 in full_bodies_scaled:
+                x1 = int(x1) * configs[state]["res"][0] // 640
+                y1 = int(y1) * configs[state]["res"][1] // 480
+                x2 = int(x2) * configs[state]["res"][0] // 640
+                y2 = int(y2) * configs[state]["res"][1] // 480
+                current_target_area = (x2 - x1) * (y2 - y1)
                 past_target_area = past_target_area1 if cam_id == 1 else past_target_area2
                 
                 # Approach detection (fixed logic)
@@ -173,10 +216,9 @@ for frame1, frame2 in zip(generate_frames(picam2), generate_frames(picam3)):
                     globals()['past_target_area%d' % cam_id] = past_target_area  # Save past
                     width, height, mode, hz, alarm_timer = config_state(state, picam2)
                     _, _, _, _, _ = config_state(state, picam3)
-                    state_change = True
                 
                 # Draw box
-                cv.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)  # Green for YOLO
+                cv.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
                 
                 # Update past area
                 if cam_id == 1: past_target_area1 = current_target_area
@@ -189,21 +231,29 @@ for frame1, frame2 in zip(generate_frames(picam2), generate_frames(picam3)):
                 subprocess.Popen(['sudo', 'bash', 'send_image_geeqie.sh'])
                 last_send_time = time.time()
 
-            cv.imshow(f'Capture - Full body detection {cam_id}', cv.resize(frame, (800, 600)))
+            #cv.imshow(f'Capture - Full body detection {cam_id}', cv.resize(frame, (800, 600)))
+            cv.imshow(f'Capture - Full body detection {cam_id}', frame)
 
-    # State transitions (fixed)
+    # State transitions
     if state == 2 and time.time() - alarm_timer > 10:
         state = 3
-        alarming_timer = time.time()
+        alarm_on_timer = time.time()
         width, height, mode, hz, alarm_timer = config_state(state, picam2)
         _, _, _, _, _ = config_state(state, picam3)
-    elif state == 2 and min(past_target_area1, past_target_area2) < (globals().get('saved_past_target_area1', 0) or globals().get('saved_past_target_area2', 0)) and time.time() - alarm_timer > 1:
+    elif state == 2 and min(past_target_area1, past_target_area2) < (globals().get('saved_past_target_area1', 0) or globals().get('saved_past_target_area2', 0)) and time.time() - alarm_timer > 3:
         state = 1
-    elif state == 3 and time.time() - alarming_timer > 5:
+    elif state == 3 and time.time() - alarm_on_timer > 5:
         state = 1
 
     if not any(len(b) > 0 for b in [full_bodies1, full_bodies2]) and time.time() - last_send_time > 5:
         state = 0
+
+    # state 3 things 
+    if state == 3:
+        alarm_active = True
+    else:
+        alarm_active = False
+        buzzer_pwm.ChangeDutyCycle(0)  # ensure OFF
 
     # No detections: show plain frames
     if len(full_bodies1) == 0: cv.imshow('Capture - Full body detection 1', cv.resize(frame1, (800, 600)))
@@ -228,6 +278,9 @@ for frame1, frame2 in zip(generate_frames(picam2), generate_frames(picam3)):
             cv.imwrite(os.path.join(output_dir, f"cam2_s{state}_{timestamp}.jpg"), frame2, [cv.IMWRITE_JPEG_QUALITY, 90])
             last_save_time = now
 
+    if alarm_active:
+        update_alarm()
+
     frame_count += 1
     if frame_count > frame_max:
         break
@@ -236,6 +289,11 @@ for frame1, frame2 in zip(generate_frames(picam2), generate_frames(picam3)):
 stop_event.set()
 worker1.join()
 worker2.join()
+buzzer_pwm.ChangeDutyCycle(0)
+buzzer_pwm.stop()
+time.sleep(1)
+cleanup_GPIO()
+time.sleep(1)
 for q in [frame_queue1, frame_queue2, box_queue1, box_queue2]:
     q.cancel_join_thread()
     q.close()
