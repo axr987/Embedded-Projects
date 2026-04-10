@@ -11,6 +11,9 @@ recording = False
 frame_count = 0
 output_dir = "captures"
 os.makedirs(output_dir, exist_ok=True)
+scale_factor = 1.1 # For rescaling the image for bounding box drawing
+video_writer = None # Required for video writing
+last_save_time = time.time() # For saving images at a regular interval
 
 def detectFullBody(frame):
     print("Start frame")
@@ -51,7 +54,11 @@ config = configs[state]
 width, height = config["size"]
 mode, hz = config["mode"], config["FrameDurationLimits"][0] if config["FrameDurationLimits"][0] != 0 else float('inf')
 
-print(f"State {state}: {width}x{height} {mode} @ {hz}Hz")
+#-- load cascade
+fullbody_cascade = cv.CascadeClassifier()
+if not fullbody_cascade.load(os.path.join("code", fullbody_cascade_name)):
+    print('--(!)Error loading full body cascade')
+    exit(0)
 
 # set video res
 video_config = picam2.create_video_configuration(main={"format": "RGB888", "size": (1920, 1080)})
@@ -62,8 +69,7 @@ picam2.start()
 #cap.set(cv.CAP_PROP_FRAME_HEIGHT, 1080)
 #cap.set(cv.CAP_PROP_FPS, 60)
 
-video_writer = None
-last_save_time = time.time()
+width, height, mode, hz = config_state(state)
 
 print("Recording... Press 'q' to quit")
 
@@ -78,6 +84,49 @@ while True:
     
     now = time.time()
     
+    resized = cv.resize(frame, (640, 480))
+
+    # drawing the boxes after a set of frames
+    if frame_count % 10 == 0:
+        full_bodies = detectFullBody(resized)
+        for (x,y,w,h) in full_bodies:
+            x = int(x * width / 640)
+            y = int(y * height / 480)
+            w = int(w * width / 640)
+            h = int(h * height / 480)
+    # shows the boxes if drawn
+    print(width, height)
+    if len(full_bodies) > 0:
+            # rectangle uses top left corner and bottom right corner
+            top_left = (x, y)
+            bottom_right = (x + w, y + h)
+            frame = cv.rectangle(frame, top_left, bottom_right, (255,0,0), 2)
+            cv.imshow('Capture - Full body detection', frame)
+    # shows just the frame if no boxes are drawn
+    else:
+        cv.imshow('Capture - Full body detection', frame)
+    
+    # delay
+    buttonpress = cv.waitKey(10) & 0xFF
+    if buttonpress == ord('q'):
+            break
+    elif buttonpress == ord('0'):
+            width, height, mode, hz = config_state(0)
+    elif buttonpress == ord('1'):
+            width, height, mode, hz = config_state(1)
+    elif buttonpress == ord('2'):
+            width, height, mode, hz = config_state(2)
+        
+    # video mode code
+    if mode == "video":
+        if video_writer is None:
+            fourcc = cv.VideoWriter_fourcc(*'mp4v')
+            filename = os.path.join(output_dir, f"s{state}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
+            video_writer = cv.VideoWriter(filename, fourcc, hz, (width, height))
+            print(f"VIDEO: {os.path.basename(filename)}")
+        video_writer.write(frame) if video_writer else None
+    
+    # image mode code
     if mode == "img":
         if now - last_save_time >= 1.0 / hz:
             resized = cv.resize(frame, (width, height))
