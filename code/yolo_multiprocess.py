@@ -20,10 +20,12 @@ from datetime import datetime
 import multiprocessing as mp
 import subprocess
 import torch
+from ultralytics import YOLO
 
 # Global variables
 state = 0 # change to real state select code later
 frame_count = 0 # Replace with threading later
+class_num = 0 # 0 for people, 14 for birds with YOLOv8.
 
 # Main output folder
 output_dir = "captures"
@@ -44,8 +46,8 @@ box_queue = mp.Queue(maxsize=2) # Queue for sharing bounding boxes between proce
 full_bodies = [] # List to hold detected bounding boxes
 frame_max = 10000 # Just a safety to prevent infinite loops during testing
 send_over_network = True # Set to True to enable sending images over the network to geeqie
-conf_thresh = 0.35 # Confidence threshold for YOLOv5
-nms_thresh = 0.45 # NMS threshold for YOLOv5
+conf_thresh = 0.65 # Confidence threshold for YOLOv8
+nms_thresh = 0.45 # NMS threshold for YOLOv8
 last_send_time = time.time() # For sending images at a regular interval
 
 # Modify resolution below
@@ -62,10 +64,7 @@ picam3 = Picamera2(1)
 
 # detection function
 def detectFullBody(frame_queue, box_queue, stop_event):
-    model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True) # Load YOLOv5 model
-    model.conf = conf_thresh # Set confidence threshold
-    model.iou = nms_thresh # Set NMS threshold
-    model.classes = [0] # Only detect person class (class 0 in COCO dataset)
+    model = YOLO('yolov8n.pt') # Load YOLOv8 model
     while not stop_event.is_set():
         try:
             frame = frame_queue.get(timeout=0.5)
@@ -77,18 +76,16 @@ def detectFullBody(frame_queue, box_queue, stop_event):
         if stop_event.is_set():
             break
 
-        with torch.no_grad():
-            results = model(frame)
-        boxes = results.xyxy[0].cpu().numpy()
-        filtered_boxes = [
-            [int(x1), int(y1), int(x2), int(y2)]
-            for x1, y1, x2, y2, conf, cls in boxes
-            if conf >= conf_thresh
-        ]
+        results = model(frame, verbose=False, conf=conf_thresh, classes=[class_num])
+        boxes = []
+        if results[0].boxes is not None:
+            for box in results[0].boxes.xyxy.cpu().numpy():
+                x1, y1, x2, y2 = map(int, box)
+                boxes.append((x1, y1, x2, y2))
 
         #print(f"Putting full bodies in queue: {filtered_boxes}")
         try:
-            box_queue.put(filtered_boxes, timeout=0.5)
+            box_queue.put(boxes, timeout=0.5)
         except:
             pass
 
@@ -150,10 +147,10 @@ for frame in generate_frames():
     # shows the boxes if drawn
     if len(full_bodies) > 0:
         for (x1,y1,x2,y2) in full_bodies:
-            x1 = int(x1)
-            y1 = int(y1)
-            x2 = int(x2)
-            y2 = int(y2)
+            x1 = int(x1) * configs[state]["res"][0] // 640
+            y1 = int(y1) * configs[state]["res"][1] // 480
+            x2 = int(x2) * configs[state]["res"][0] // 640
+            y2 = int(y2) * configs[state]["res"][1] // 480
             # rectangle uses top left corner and bottom right corner
             top_left = (x1, y1)
             bottom_right = (x2, y2)
@@ -173,12 +170,15 @@ for frame in generate_frames():
     if buttonpress == ord('q'):
             break
     elif buttonpress == ord('0'):
+            state = 0
             width, height, mode, hz = config_state(0)
             print(f"State {state}: {width}x{height} {mode} @ {hz}Hz")
     elif buttonpress == ord('1'):
+            state = 1
             width, height, mode, hz = config_state(1)
             print(f"State {state}: {width}x{height} {mode} @ {hz}Hz")
     elif buttonpress == ord('2'):
+            state = 2
             width, height, mode, hz = config_state(2)
             print(f"State {state}: {width}x{height} {mode} @ {hz}Hz")
 

@@ -18,6 +18,7 @@ buzzer_pwm = GPIO.PWM(18, 523)  # Buzzer on GPIO 18 at 1kHz
 buzzer_pwm.start(0)  # Start with buzzer off
 
 # Global variables
+class_num = 0 # 0 for people, 14 for birds with YOLOv8.
 state = 0
 frame_count = 0
 
@@ -56,7 +57,7 @@ alarm_step = 0
 alarm_active = False
 
 # Load YOLO model (person class: 0)
-model = YOLO('yolov5s.pt')
+model = YOLO('yolov8n.pt')
 
 configs = {
     0: {"res": (640, 480), "hz": 3, "mode": "preview"},
@@ -84,7 +85,7 @@ def detectFullBody(frame_queue, box_queue, stop_event):
         except:
             continue
         # Run YOLO inference
-        results = model(frame, verbose=False, conf=0.5, classes=[0])  # Person only, conf>0.5
+        results = model(frame, verbose=False, conf=0.5, classes=[class_num])  # Person only, conf>0.5
         boxes = []
         if results[0].boxes is not None:
             for box in results[0].boxes.xyxy.cpu().numpy():
@@ -210,7 +211,7 @@ for frame1, frame2 in zip(generate_frames(picam2), generate_frames(picam3)):
                 current_target_area = (x2 - x1) * (y2 - y1)
                 past_target_area = past_target_area1 if cam_id == 1 else past_target_area2
                 
-                # Approach detection (fixed logic)
+                # Approach detection
                 if state == 1 and current_target_area > past_target_area * approach_scale:
                     state = 2
                     globals()['past_target_area%d' % cam_id] = past_target_area  # Save past
@@ -289,8 +290,6 @@ for frame1, frame2 in zip(generate_frames(picam2), generate_frames(picam3)):
 stop_event.set()
 worker1.join()
 worker2.join()
-buzzer_pwm.ChangeDutyCycle(0)
-buzzer_pwm.stop()
 time.sleep(1)
 cleanup_GPIO()
 time.sleep(1)
