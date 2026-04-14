@@ -48,6 +48,7 @@ frameset2 = []
 
 #Sunfounder resolution 2592x1944
 #RPi cam resolution 4608x2592
+
 configs = {
     0: {"res": (640, 480), "hz": 3, "mode": "preview"},
     1: {"res": (640, 480), "hz": 3, "mode": "img"},
@@ -78,17 +79,8 @@ picam3.configure(picam3.create_preview_configuration(
 picam2.start()
 picam3.start()
 
-def config_state(state, picam):
-    if video_writer1:
-        video_writer1.release()
-    if video_writer2:
-        video_writer2.release()
-    config = configs[state]
-    width, height = config["res"]
-    return width, height
-
 def set_state(new_state):
-    global state, last_state
+    global state, last_state, video_writer1, video_writer2
 
     if new_state == last_state:
         return
@@ -96,8 +88,12 @@ def set_state(new_state):
     state = new_state
     last_state = new_state
 
-    config_state(state, picam2)
-    config_state(state, picam3)
+    if video_writer1:
+        video_writer1.release()
+        video_writer1 = None
+    if video_writer2:
+        video_writer2.release()
+        video_writer2 = None
 
 def alarm_worker():
     global alarm_active, alarm_step, alarm_last_step
@@ -232,25 +228,15 @@ class App:
 
         framefull1 = picam2.capture_array()
         framefull2 = picam3.capture_array()
+        frame1 = cv.resize(framefull1, configs[state]["res"])
+        frame2 = cv.resize(framefull2, configs[state]["res"])
 
-        if state == 0 or state == 1:
-            frame1 = cv.resize(framefull1, (640, 480))
-            frame2 = cv.resize(framefull2, (640, 480))
+        #frameset1.append(frame1)
+        #frameset2.append(frame2)
 
-        elif state == 2:
-            frame1 = cv.resize(framefull1, (1280, 720))
-            frame2 = cv.resize(framefull2, (1280, 720))
-
-        elif state == 3:
-            frame1 = cv.resize(framefull1, (1920, 1080))
-            frame2 = cv.resize(framefull2, (1920, 1080))
-
-        frameset1.append(frame1)
-        frameset2.append(frame2)
-
-        try: frame_queue1.put_nowait(frame1.copy())
+        try: frame_queue1.put_nowait(frame1)
         except: pass
-        try: frame_queue2.put_nowait(frame2.copy())
+        try: frame_queue2.put_nowait(frame2)
         except: pass
 
         # Get detections
@@ -287,12 +273,12 @@ class App:
 
         # Draw boxes
         for (boxes, frame, cam_id) in [(self.full_bodies1, frame1, 1), (self.full_bodies2, frame2, 2)]:
-            h, w = frame.shape[:2]
+            #h, w = frame.shape[:2]
             for (x1, y1, x2, y2) in boxes:
-                x1 = int(x1 * w / 640)
-                y1 = int(y1 * h / 480)
-                x2 = int(x2 * w / 640)
-                y2 = int(y2 * h / 480)
+                x1 = int(x1 * configs[state]["res"][0] / 640)
+                y1 = int(y1 * configs[state]["res"][1] / 480)
+                x2 = int(x2 * configs[state]["res"][0] / 640)
+                y2 = int(y2 * configs[state]["res"][1] / 480)
                 cv.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
                 current_target_area = (x2 - x1) * (y2 - y1)
                 if cam_id == 1:
