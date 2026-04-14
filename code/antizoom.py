@@ -9,6 +9,7 @@ from ultralytics import YOLO
 from picamera2 import Picamera2
 import RPi.GPIO as GPIO
 from datetime import datetime
+import threading
 
 from PyQt5.QtWidgets import QApplication, QLabel, QWidget, QVBoxLayout, QHBoxLayout
 from PyQt5.QtCore import QTimer
@@ -64,18 +65,26 @@ stop_event = mp.Event()
 picam2 = Picamera2(0)
 picam3 = Picamera2(1)
 
+full_res1 = (picam2.sensor_resolution[0] // 2, picam2.sensor_resolution[1] // 2)
+full_res2 = (picam3.sensor_resolution[0] // 2, picam3.sensor_resolution[1] // 2)
+
+picam2.configure(picam2.create_preview_configuration(
+    main={"format": "RGB888", "size": full_res1}
+))
+picam3.configure(picam3.create_preview_configuration(
+    main={"format": "RGB888", "size": full_res2}
+))
+
+picam2.start()
+picam3.start()
+
 def config_state(state, picam):
-    picam.stop()
     if video_writer1:
         video_writer1.release()
     if video_writer2:
         video_writer2.release()
     config = configs[state]
     width, height = config["res"]
-    picam.configure(picam.create_preview_configuration(
-        main={"format": "RGB888", "size": (width, height)}
-    ))
-    picam.start()
     return width, height
 
 def set_state(new_state):
@@ -89,6 +98,35 @@ def set_state(new_state):
 
     config_state(state, picam2)
     config_state(state, picam3)
+
+def alarm_worker():
+    global alarm_active, alarm_step, alarm_last_step
+
+    intervals = [0.05, 0.05, 0.10, 0.05]
+    freqs = [
+        note_start,
+        note_interval * note_start,
+        note_interval ** 11 * note_start,
+        None
+    ]
+
+    while not stop_event.is_set():
+        if not alarm_active:
+            buzzer_pwm.ChangeDutyCycle(0)
+            time.sleep(0.01)
+            continue
+
+        freq = freqs[alarm_step]
+
+        if freq is not None:
+            buzzer_pwm.ChangeDutyCycle(50)
+            buzzer_pwm.ChangeFrequency(freq)
+        else:
+            buzzer_pwm.ChangeDutyCycle(0)
+
+        time.sleep(intervals[alarm_step]) 
+
+        alarm_step = (alarm_step + 1) % len(intervals)
 
 # ---------------- DETECTION PROCESS ----------------
 def detectFullBody(frame_queue, box_queue, stop_event):
@@ -176,6 +214,10 @@ class App:
         self.worker1.start()
         self.worker2.start()
 
+        # Get alarm thread running
+        self.alarm_thread = threading.Thread(target=alarm_worker, daemon=True)
+        self.alarm_thread.start()
+
         self.full_bodies1 = []
         self.full_bodies2 = []
 
@@ -188,8 +230,21 @@ class App:
     def update(self):
         global state, alarm_active, past_target_area1, past_target_area2, state2start, configs, output_dir, video_writer1, video_writer2, last_save_time, frameset1, frameset2
 
-        frame1 = picam2.capture_array()
-        frame2 = picam3.capture_array()
+        framefull1 = picam2.capture_array()
+        framefull2 = picam3.capture_array()
+
+        if state == 0 or state == 1:
+            frame1 = cv.resize(framefull1, (640, 480))
+            frame2 = cv.resize(framefull2, (640, 480))
+
+        elif state == 2:
+            frame1 = cv.resize(framefull1, (1280, 720))
+            frame2 = cv.resize(framefull2, (1280, 720))
+
+        elif state == 3:
+            frame1 = cv.resize(framefull1, (1920, 1080))
+            frame2 = cv.resize(framefull2, (1920, 1080))
+
         frameset1.append(frame1)
         frameset2.append(frame2)
 
@@ -263,10 +318,8 @@ class App:
 
         if state == 3:
             alarm_active = True
-            self.update_alarm()
         else:
             alarm_active = False
-            buzzer_pwm.ChangeDutyCycle(0)
 
         # Update GUI
         self.gui.update_ui(frame1, frame2, state, alarm_active)
@@ -289,31 +342,6 @@ class App:
                 cv.imwrite(os.path.join(output_dir, f"cam1_s{state}_{timestamp}.jpg"), frame1, [cv.IMWRITE_JPEG_QUALITY, 90])
                 cv.imwrite(os.path.join(output_dir, f"cam2_s{state}_{timestamp}.jpg"), frame2, [cv.IMWRITE_JPEG_QUALITY, 90])
                 last_save_time = now
-
-    def update_alarm(self):
-        global alarm_last_step, alarm_step
-
-        now = time.time()
-
-        # timing for each step
-        intervals = [0.05, 0.05, 0.10, 0.05]
-        freqs = [
-            note_start,
-            note_interval * note_start,
-            note_interval ** 11 * note_start,
-            None  # silence
-        ]
-
-        if now - alarm_last_step >= intervals[alarm_step]:
-            alarm_last_step = now
-
-            if freqs[alarm_step] is not None:
-                buzzer_pwm.ChangeDutyCycle(50)
-                buzzer_pwm.ChangeFrequency(freqs[alarm_step])
-            else:
-                buzzer_pwm.ChangeDutyCycle(0)
-
-            alarm_step = (alarm_step + 1) % len(intervals)
 
     def cleanup(self):
         if self.cleaned_up:
