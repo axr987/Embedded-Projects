@@ -10,6 +10,9 @@ from picamera2 import Picamera2
 import RPi.GPIO as GPIO
 from datetime import datetime
 import threading
+import numpy as np
+from multiprocessing import shared_memory
+from multiprocessing import Value
 
 from PyQt5.QtWidgets import QApplication, QLabel, QWidget, QVBoxLayout, QHBoxLayout
 from PyQt5.QtCore import QTimer
@@ -46,8 +49,8 @@ last_save_time = time.time()
 frameset1 = []
 frameset2 = []
 
-#Sunfounder resolution 2592x1944
-#RPi cam resolution 4608x2592
+# Sunfounder resolution 2592x1944
+# RPi cam resolution 4608x2592
 
 configs = {
     0: {"res": (640, 480), "hz": 3, "mode": "preview"},
@@ -56,8 +59,6 @@ configs = {
     3: {"res": (1920, 1080), "hz": 30, "mode": "video"}
 }
 
-frame_queue1 = mp.Queue(maxsize=2)
-frame_queue2 = mp.Queue(maxsize=2)
 box_queue1 = mp.Queue(maxsize=2)
 box_queue2 = mp.Queue(maxsize=2)
 stop_event = mp.Event()
@@ -78,6 +79,20 @@ picam3.configure(picam3.create_preview_configuration(
 
 picam2.start()
 picam3.start()
+
+# Setup shared memory
+frame_shape = (480, 640, 3)
+frame_size = np.prod(frame_shape)
+
+shm1 = shared_memory.SharedMemory(create=True, size=frame_size)
+shm2 = shared_memory.SharedMemory(create=True, size=frame_size)
+
+shared_frame1 = np.ndarray(frame_shape, dtype=np.uint8, buffer=shm1.buf)
+shared_frame2 = np.ndarray(frame_shape, dtype=np.uint8, buffer=shm2.buf)
+
+# Flags to signal new frame
+frame_ready1 = Value('b', False)
+frame_ready2 = Value('b', False)
 
 def set_state(new_state):
     global state, last_state, video_writer1, video_writer2
@@ -125,22 +140,25 @@ def alarm_worker():
         alarm_step = (alarm_step + 1) % len(intervals)
 
 # ---------------- DETECTION PROCESS ----------------
-def detectFullBody(frame_queue, box_queue, stop_event):
-    # YOLO
+def detectFullBody(shm_name, frame_ready, box_queue, stop_event):
+    shm = shared_memory.SharedMemory(name=shm_name)
+    frame = np.ndarray(frame_shape, dtype=np.uint8, buffer=shm.buf)
+
     model = YOLO("yolov8n.pt")
+
     while not stop_event.is_set():
-        try:
-            frame = frame_queue.get(timeout=0.1)
-        except:
+        if not frame_ready.value:
+            time.sleep(0.005)
             continue
 
-        results = model(frame, verbose=False, imgsz=640, conf=0.5, classes=[class_num])
-        boxes = []
+        frame_ready.value = False
 
+        results = model(frame, verbose=False, imgsz=640, conf=0.5, classes=[class_num])
+
+        boxes = []
         if results[0].boxes is not None:
             for box in results[0].boxes.xyxy.cpu().numpy():
-                x1, y1, x2, y2 = map(int, box)
-                boxes.append((x1, y1, x2, y2))
+                boxes.append(tuple(map(int, box)))
 
         try:
             box_queue.put_nowait(boxes)
@@ -205,8 +223,8 @@ class App:
         set_state(state)
 
         # Start workers
-        self.worker1 = mp.Process(target=detectFullBody, args=(frame_queue1, box_queue1, stop_event), daemon=True)
-        self.worker2 = mp.Process(target=detectFullBody, args=(frame_queue2, box_queue2, stop_event), daemon=True)
+        self.worker1 = mp.Process(target=detectFullBody, args=(shm1.name, frame_ready1, box_queue1, stop_event), daemon=True)
+        self.worker2 = mp.Process(target=detectFullBody, args=(shm2.name, frame_ready2, box_queue2, stop_event), daemon=True)
         self.worker1.start()
         self.worker2.start()
 
@@ -224,26 +242,22 @@ class App:
         self.cleaned_up = False
 
     def update(self):
-        global state, alarm_active, past_target_area1, past_target_area2, state2start, configs, output_dir, video_writer1, video_writer2, last_save_time, frameset1, frameset2
+        global state, memflag, alarm_active, past_target_area1, past_target_area2, state2start, configs, output_dir, video_writer1, video_writer2, last_save_time, frameset1, frameset2
 
         framefull1 = picam2.capture_array()
         framefull2 = picam3.capture_array()
         frame1 = cv.resize(framefull1, configs[state]["res"])
         frame2 = cv.resize(framefull2, configs[state]["res"])
+        small_frame1 = cv.resize(framefull1, (640, 480))
+        small_frame2 = cv.resize(framefull2, (640, 480))
 
-        #frameset1.append(frame1)
-        #frameset2.append(frame2)
+        frame_ready1.value = False
+        shared_frame1[:] = small_frame1
+        frame_ready1.value = True
 
-        if not frame_queue1.full():
-            try:
-                frame_queue1.put_nowait(frame1)
-            except:
-                pass
-        if not frame_queue2.full():
-            try:
-                frame_queue2.put_nowait(frame2)
-            except:
-                pass
+        frame_ready2.value = False
+        shared_frame2[:] = small_frame2
+        frame_ready2.value = True
 
         # Get detections
         try:
@@ -347,7 +361,15 @@ class App:
         self.worker1.join(timeout=1)
         self.worker2.join(timeout=1)
 
-        for q in [frame_queue1, frame_queue2, box_queue1, box_queue2]:
+        try:
+            shm1.close()
+            shm1.unlink()
+            shm2.close()
+            shm2.unlink()
+        except:
+            pass
+
+        for q in [box_queue1, box_queue2]:
             q.cancel_join_thread()
             q.close()
 
