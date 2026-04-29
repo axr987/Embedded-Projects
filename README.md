@@ -12,15 +12,21 @@ The captures folder contains images and video that are collected with the code.
 
 ## code
 The code folder, of course, contains our code.
+- antizoom.py was a test script to attempt to prevent the zoom of the cameras from changing when the device changed states.
+- better_webstream.py is a script for testing the Flask server.
 - buzzertest.py tests the buzzer connected to the Pi with a breadboard circuit.
 - cascade_class_multiprocess.py tests human detection with Haar cascade classifiers and tests using multiprocessing to speed up bounding box drawing alongside collecting and displaying frames.
 - cascade_statemachine.py is a version of the human detection code using Haar cascade classifiers that also includes a state machine to change the capture frame rate depending on the situation.
+- flappydex_birder.py is the final version of the code for our automatic bird tracking system.
 - fullbody_tracker_test.py is a semi-pseudocode version of what we wanted for the Haar cascade classifier code.
 - motion_tracker.py experiments with frame differencing to detect motion.
 - recording_test.py was our first attempt using the Haar cascade classifiers to save images and video of bounding boxes around people.
+- ***security_system_final.py is the final version of our security system code.***
+- shared_memory.py tests the use of shared memory instead of queues to reduce memory load.
 - tutorial.py tests the functionality of one of the cameras connected to the Pi.
+- webstream.py was our first attempt of using a Flask server.
 - yolo_multiprocess.py tests using YOLO for detection of people and multiprocessing to speed up bounding box drawing with YOLO alongside frame capture and display.
-- yolo_statemachine_gui_wip.py is our most up-to-date iteration of our code. Using YOLOv8, we can track people or birds, and our state machine mostly works, with some troubleshooting left for the transition between states 1 and 2. It also includes a very simple GUI to replace the OpenCV imshow displays.
+- yolo_statemachine_gui_wip.py was our most up-to-date code before transitioning to using a Flask server for displaying frames. It used a GUI displayed to the user's monitor.
 - yolo_statemachine_test.py is an earlier iteration of yolo_statemachine_gui_wip.py
 
 ## data
