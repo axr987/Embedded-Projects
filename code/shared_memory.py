@@ -9,6 +9,10 @@ from ultralytics import YOLO
 from picamera2 import Picamera2
 import RPi.GPIO as GPIO
 from datetime import datetime
+import threading
+import numpy as np
+from multiprocessing import shared_memory
+from multiprocessing import Value
 
 from PyQt5.QtWidgets import QApplication, QLabel, QWidget, QVBoxLayout, QHBoxLayout
 from PyQt5.QtCore import QTimer
@@ -45,8 +49,9 @@ last_save_time = time.time()
 frameset1 = []
 frameset2 = []
 
-#Sunfounder resolution 2592x1944
-#RPi cam resolution 4608x2592
+# Sunfounder resolution 2592x1944
+# RPi cam resolution 4608x2592
+
 configs = {
     0: {"res": (640, 480), "hz": 3, "mode": "preview"},
     1: {"res": (640, 480), "hz": 3, "mode": "img"},
@@ -54,8 +59,6 @@ configs = {
     3: {"res": (1920, 1080), "hz": 30, "mode": "video"}
 }
 
-frame_queue1 = mp.Queue(maxsize=2)
-frame_queue2 = mp.Queue(maxsize=2)
 box_queue1 = mp.Queue(maxsize=2)
 box_queue2 = mp.Queue(maxsize=2)
 stop_event = mp.Event()
@@ -64,22 +67,35 @@ stop_event = mp.Event()
 picam2 = Picamera2(0)
 picam3 = Picamera2(1)
 
-def config_state(state, picam):
-    picam.stop()
-    if video_writer1:
-        video_writer1.release()
-    if video_writer2:
-        video_writer2.release()
-    config = configs[state]
-    width, height = config["res"]
-    picam.configure(picam.create_preview_configuration(
-        main={"format": "RGB888", "size": (width, height)}
-    ))
-    picam.start()
-    return width, height
+full_res1 = (picam2.sensor_resolution[0] // 2, picam2.sensor_resolution[1] // 2)
+full_res2 = (picam3.sensor_resolution[0] // 2, picam3.sensor_resolution[1] // 2)
+
+picam2.configure(picam2.create_preview_configuration(
+    main={"format": "RGB888", "size": full_res1}
+))
+picam3.configure(picam3.create_preview_configuration(
+    main={"format": "RGB888", "size": full_res2}
+))
+
+picam2.start()
+picam3.start()
+
+# Setup shared memory
+frame_shape = (480, 640, 3)
+frame_size = np.prod(frame_shape)
+
+shm1 = shared_memory.SharedMemory(create=True, size=frame_size)
+shm2 = shared_memory.SharedMemory(create=True, size=frame_size)
+
+shared_frame1 = np.ndarray(frame_shape, dtype=np.uint8, buffer=shm1.buf)
+shared_frame2 = np.ndarray(frame_shape, dtype=np.uint8, buffer=shm2.buf)
+
+# Flags to signal new frame
+frame_ready1 = Value('b', False)
+frame_ready2 = Value('b', False)
 
 def set_state(new_state):
-    global state, last_state
+    global state, last_state, video_writer1, video_writer2
 
     if new_state == last_state:
         return
@@ -87,26 +103,62 @@ def set_state(new_state):
     state = new_state
     last_state = new_state
 
-    config_state(state, picam2)
-    config_state(state, picam3)
+    if video_writer1:
+        video_writer1.release()
+        video_writer1 = None
+    if video_writer2:
+        video_writer2.release()
+        video_writer2 = None
 
-# ---------------- DETECTION PROCESS ----------------
-def detectFullBody(frame_queue, box_queue, stop_event):
-    # YOLO
-    model = YOLO("yolov8n.pt")
+def alarm_worker():
+    global alarm_active, alarm_step, alarm_last_step
+
+    intervals = [0.05, 0.05, 0.10, 0.05]
+    freqs = [
+        note_start,
+        note_interval * note_start,
+        note_interval ** 11 * note_start,
+        None
+    ]
+
     while not stop_event.is_set():
-        try:
-            frame = frame_queue.get(timeout=0.1)
-        except:
+        if not alarm_active:
+            buzzer_pwm.ChangeDutyCycle(0)
+            time.sleep(0.01)
             continue
 
-        results = model(frame, verbose=False, imgsz=640, conf=0.5, classes=[class_num])
-        boxes = []
+        freq = freqs[alarm_step]
 
+        if freq is not None:
+            buzzer_pwm.ChangeDutyCycle(50)
+            buzzer_pwm.ChangeFrequency(freq)
+        else:
+            buzzer_pwm.ChangeDutyCycle(0)
+
+        time.sleep(intervals[alarm_step]) 
+
+        alarm_step = (alarm_step + 1) % len(intervals)
+
+# ---------------- DETECTION PROCESS ----------------
+def detectFullBody(shm_name, frame_ready, box_queue, stop_event):
+    shm = shared_memory.SharedMemory(name=shm_name)
+    frame = np.ndarray(frame_shape, dtype=np.uint8, buffer=shm.buf)
+
+    model = YOLO("yolov8n.pt")
+
+    while not stop_event.is_set():
+        if not frame_ready.value:
+            time.sleep(0.005)
+            continue
+
+        frame_ready.value = False
+
+        results = model(frame, verbose=False, imgsz=640, conf=0.5, classes=[class_num])
+
+        boxes = []
         if results[0].boxes is not None:
             for box in results[0].boxes.xyxy.cpu().numpy():
-                x1, y1, x2, y2 = map(int, box)
-                boxes.append((x1, y1, x2, y2))
+                boxes.append(tuple(map(int, box)))
 
         try:
             box_queue.put_nowait(boxes)
@@ -171,10 +223,14 @@ class App:
         set_state(state)
 
         # Start workers
-        self.worker1 = mp.Process(target=detectFullBody, args=(frame_queue1, box_queue1, stop_event), daemon=True)
-        self.worker2 = mp.Process(target=detectFullBody, args=(frame_queue2, box_queue2, stop_event), daemon=True)
+        self.worker1 = mp.Process(target=detectFullBody, args=(shm1.name, frame_ready1, box_queue1, stop_event), daemon=True)
+        self.worker2 = mp.Process(target=detectFullBody, args=(shm2.name, frame_ready2, box_queue2, stop_event), daemon=True)
         self.worker1.start()
         self.worker2.start()
+
+        # Get alarm thread running
+        self.alarm_thread = threading.Thread(target=alarm_worker, daemon=True)
+        self.alarm_thread.start()
 
         self.full_bodies1 = []
         self.full_bodies2 = []
@@ -186,17 +242,22 @@ class App:
         self.cleaned_up = False
 
     def update(self):
-        global state, alarm_active, past_target_area1, past_target_area2, state2start, configs, output_dir, video_writer1, video_writer2, last_save_time, frameset1, frameset2
+        global state, memflag, alarm_active, past_target_area1, past_target_area2, state2start, configs, output_dir, video_writer1, video_writer2, last_save_time, frameset1, frameset2
 
-        frame1 = picam2.capture_array()
-        frame2 = picam3.capture_array()
-        frameset1.append(frame1)
-        frameset2.append(frame2)
+        framefull1 = picam2.capture_array()
+        framefull2 = picam3.capture_array()
+        frame1 = cv.resize(framefull1, configs[state]["res"])
+        frame2 = cv.resize(framefull2, configs[state]["res"])
+        small_frame1 = cv.resize(framefull1, (640, 480))
+        small_frame2 = cv.resize(framefull2, (640, 480))
 
-        try: frame_queue1.put_nowait(frame1.copy())
-        except: pass
-        try: frame_queue2.put_nowait(frame2.copy())
-        except: pass
+        frame_ready1.value = False
+        shared_frame1[:] = small_frame1
+        frame_ready1.value = True
+
+        frame_ready2.value = False
+        shared_frame2[:] = small_frame2
+        frame_ready2.value = True
 
         # Get detections
         try:
@@ -232,12 +293,12 @@ class App:
 
         # Draw boxes
         for (boxes, frame, cam_id) in [(self.full_bodies1, frame1, 1), (self.full_bodies2, frame2, 2)]:
-            h, w = frame.shape[:2]
+            #h, w = frame.shape[:2]
             for (x1, y1, x2, y2) in boxes:
-                x1 = int(x1 * w / 640)
-                y1 = int(y1 * h / 480)
-                x2 = int(x2 * w / 640)
-                y2 = int(y2 * h / 480)
+                x1 = int(x1 * configs[state]["res"][0] / 640)
+                y1 = int(y1 * configs[state]["res"][1] / 480)
+                x2 = int(x2 * configs[state]["res"][0] / 640)
+                y2 = int(y2 * configs[state]["res"][1] / 480)
                 cv.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
                 current_target_area = (x2 - x1) * (y2 - y1)
                 if cam_id == 1:
@@ -263,10 +324,8 @@ class App:
 
         if state == 3:
             alarm_active = True
-            self.update_alarm()
         else:
             alarm_active = False
-            buzzer_pwm.ChangeDutyCycle(0)
 
         # Update GUI
         self.gui.update_ui(frame1, frame2, state, alarm_active)
@@ -290,31 +349,6 @@ class App:
                 cv.imwrite(os.path.join(output_dir, f"cam2_s{state}_{timestamp}.jpg"), frame2, [cv.IMWRITE_JPEG_QUALITY, 90])
                 last_save_time = now
 
-    def update_alarm(self):
-        global alarm_last_step, alarm_step
-
-        now = time.time()
-
-        # timing for each step
-        intervals = [0.05, 0.05, 0.10, 0.05]
-        freqs = [
-            note_start,
-            note_interval * note_start,
-            note_interval ** 11 * note_start,
-            None  # silence
-        ]
-
-        if now - alarm_last_step >= intervals[alarm_step]:
-            alarm_last_step = now
-
-            if freqs[alarm_step] is not None:
-                buzzer_pwm.ChangeDutyCycle(50)
-                buzzer_pwm.ChangeFrequency(freqs[alarm_step])
-            else:
-                buzzer_pwm.ChangeDutyCycle(0)
-
-            alarm_step = (alarm_step + 1) % len(intervals)
-
     def cleanup(self):
         if self.cleaned_up:
             return
@@ -327,7 +361,15 @@ class App:
         self.worker1.join(timeout=1)
         self.worker2.join(timeout=1)
 
-        for q in [frame_queue1, frame_queue2, box_queue1, box_queue2]:
+        try:
+            shm1.close()
+            shm1.unlink()
+            shm2.close()
+            shm2.unlink()
+        except:
+            pass
+
+        for q in [box_queue1, box_queue2]:
             q.cancel_join_thread()
             q.close()
 
