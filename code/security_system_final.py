@@ -100,7 +100,7 @@ latest_alarm = False
 # ---------------- STATE ----------------
 def set_state(new_state):
     global state, last_state, video_writer1, video_writer2
-
+    
     if new_state == last_state:
         return
 
@@ -433,6 +433,17 @@ class App:
                             globals()['past_target_area%d' % cam_id] = current_target_area  # Save past
                             set_state(state)
 
+            # Video mode
+            if configs[state]["mode"] == "video":
+                if video_writer1 is None:
+                    fourcc = cv.VideoWriter_fourcc(*'mp4v')
+                    video_writer1 = cv.VideoWriter(os.path.join(output_dir, f"cam1_s{state}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"), fourcc, configs[state]["hz"], configs[state]["res"])
+                video_writer1.write(frame1)
+                if video_writer2 is None:
+                    fourcc = cv.VideoWriter_fourcc(*'mp4v')
+                    video_writer2 = cv.VideoWriter(os.path.join(output_dir, f"cam2_s{state}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"), fourcc, configs[state]["hz"], configs[state]["res"])
+                video_writer2.write(frame2)
+            
             alarm_active = (state == 3)
 
             latest_frame1 = small1.copy()
