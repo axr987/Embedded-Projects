@@ -10,6 +10,7 @@ from picamera2 import Picamera2
 import RPi.GPIO as GPIO
 import threading
 import numpy as np
+from datetime import datetime
 from multiprocessing import shared_memory
 from multiprocessing import Value
 from flask import Flask, Response, jsonify, request
@@ -433,17 +434,33 @@ class App:
                             globals()['past_target_area%d' % cam_id] = current_target_area  # Save past
                             set_state(state)
 
-            # Video mode
+            # video mode code
             if configs[state]["mode"] == "video":
                 if video_writer1 is None:
                     fourcc = cv.VideoWriter_fourcc(*'mp4v')
-                    video_writer1 = cv.VideoWriter(os.path.join(output_dir, f"cam1_s{state}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"), fourcc, configs[state]["hz"], configs[state]["res"])
-                video_writer1.write(frame1)
-                if video_writer2 is None:
-                    fourcc = cv.VideoWriter_fourcc(*'mp4v')
-                    video_writer2 = cv.VideoWriter(os.path.join(output_dir, f"cam2_s{state}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"), fourcc, configs[state]["hz"], configs[state]["res"])
-                video_writer2.write(frame2)
+                    filename1 = os.path.join(output_dir, f"c1_s{state}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
+                    filename2 = os.path.join(output_dir, f"c2_s{state}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
+                    video_writer1 = cv.VideoWriter(filename1, fourcc, configs[state]["hz"], configs[state]["res"])
+                    video_writer2 = cv.VideoWriter(filename2, fourcc, configs[state]["hz"], configs[state]["res"])
+                    # print(f"VIDEO: {os.path.basename(filename)}")
+                video_writer1.write(frame1) if video_writer1 else None
+                video_writer2.write(frame2) if video_writer2 else None
             
+            # image mode code
+            if configs[state]["mode"] == "img":
+                now = time.time()
+                if now - last_save_time >= 1.0 / configs[state]["hz"]:
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+                    filename1 = os.path.join(output_dir, f"c1_s{state}_{timestamp}.jpg")
+                    filename2 = os.path.join(output_dir, f"c2_s{state}_{timestamp}.jpg")
+                    
+                    last_save_time = now
+
+                    # JPEG compress
+                    cv.imwrite(filename1, frame1, [cv.IMWRITE_JPEG_QUALITY, 90])
+                    cv.imwrite(filename2, frame2, [cv.IMWRITE_JPEG_QUALITY, 90])
+                    # print(f"IMG: {os.path.basename(filename)}")
+
             alarm_active = (state == 3)
 
             latest_frame1 = small1.copy()
