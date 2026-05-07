@@ -101,7 +101,7 @@ latest_alarm = False
 # ---------------- STATE ----------------
 def set_state(new_state):
     global state, last_state, video_writer1, video_writer2
-
+    
     if new_state == last_state:
         return
 
